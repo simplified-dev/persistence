@@ -1,0 +1,30 @@
+[versions]
+lombok = "1.18.36"
+annotations = "26.0.2"
+simplified-annotations = "1.0.4"
+junit-jupiter = "5.11.4"
+hamcrest = "2.2"
+log4j2 = "2.25.3"
+gson = "2.11.0"
+mariadb = "3.5.3"
+h2 = "2.3.232"
+ehcache = "3.10.8"
+hibernate = "7.3.0.Final"
+
+[libraries]
+lombok = { group = "org.projectlombok", name = "lombok", version.ref = "lombok" }
+annotations = { group = "org.jetbrains", name = "annotations", version.ref = "annotations" }
+simplified-annotations = { group = "dev.sbs", name = "simplified-annotations", version.ref = "simplified-annotations" }
+junit-jupiter-api = { group = "org.junit.jupiter", name = "junit-jupiter-api", version.ref = "junit-jupiter" }
+junit-jupiter-engine = { group = "org.junit.jupiter", name = "junit-jupiter-engine", version.ref = "junit-jupiter" }
+junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher" }
+hamcrest = { group = "org.hamcrest", name = "hamcrest", version.ref = "hamcrest" }
+log4j2-api = { group = "org.apache.logging.log4j", name = "log4j-api", version.ref = "log4j2" }
+log4j2-core = { group = "org.apache.logging.log4j", name = "log4j-core", version.ref = "log4j2" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+mariadb = { group = "org.mariadb.jdbc", name = "mariadb-java-client", version.ref = "mariadb" }
+h2 = { group = "com.h2database", name = "h2", version.ref = "h2" }
+ehcache = { group = "org.ehcache", name = "ehcache", version.ref = "ehcache" }
+hibernate-core = { group = "org.hibernate.orm", name = "hibernate-core", version.ref = "hibernate" }
+hibernate-hikaricp = { group = "org.hibernate.orm", name = "hibernate-hikaricp", version.ref = "hibernate" }
+hibernate-jcache = { group = "org.hibernate.orm", name = "hibernate-jcache", version.ref = "hibernate" }
