@@ -3,7 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
-import dev.simplified.collection.concurrent.Concurrent;
+import dev.simplified.collection.Concurrent;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

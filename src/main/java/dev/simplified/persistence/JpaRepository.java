@@ -2,13 +2,13 @@ package dev.simplified.persistence;
 
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
-import dev.simplified.collection.concurrent.Concurrent;
-import dev.simplified.collection.concurrent.ConcurrentList;
-import dev.simplified.collection.concurrent.ConcurrentSet;
+import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentSet;
 import dev.simplified.gson.PostInit;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
-import dev.simplified.tuple.single.SingleStream;
+import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.util.time.Stopwatch;
 import jakarta.persistence.Id;
 import jakarta.persistence.criteria.CriteriaBuilder;
