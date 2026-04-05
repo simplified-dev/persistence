@@ -1,8 +1,8 @@
 package dev.simplified.persistence;
 
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.collection.concurrent.Concurrent;
-import dev.simplified.collection.concurrent.ConcurrentList;
+import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
 import org.jetbrains.annotations.NotNull;
 
 /**

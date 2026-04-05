@@ -2,8 +2,8 @@ package dev.simplified.persistence.type;
 
 import com.google.gson.Gson;
 import dev.simplified.persistence.JpaModel;
-import dev.simplified.collection.concurrent.Concurrent;
-import dev.simplified.collection.concurrent.ConcurrentList;
+import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import org.hibernate.boot.Metadata;

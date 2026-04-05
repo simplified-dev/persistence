@@ -3,7 +3,7 @@ package dev.simplified.persistence.source;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaRepository;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.collection.concurrent.ConcurrentList;
+import dev.simplified.collection.ConcurrentList;
 import org.jetbrains.annotations.NotNull;
 
 /**

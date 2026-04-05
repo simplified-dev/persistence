@@ -1,9 +1,9 @@
 package dev.simplified.persistence;
 
 import dev.simplified.persistence.source.Source;
-import dev.simplified.collection.concurrent.Concurrent;
-import dev.simplified.collection.concurrent.ConcurrentList;
-import dev.simplified.collection.concurrent.ConcurrentMap;
+import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.sort.Graph;
 import dev.simplified.reflection.Reflection;
 import lombok.AccessLevel;
