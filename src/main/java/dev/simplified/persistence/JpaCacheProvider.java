@@ -6,12 +6,14 @@ import lombok.RequiredArgsConstructor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import javax.cache.Caching;
+
 /**
  * Selects the JCache (JSR-107) {@code CachingProvider} implementation that backs the
  * Hibernate second-level cache for a {@link JpaConfig}.
  *
  * <p>Each constant carries the fully-qualified provider class name passed to
- * {@link javax.cache.Caching#getCachingProvider(String)} and an optional XML config
+ * {@link Caching#getCachingProvider(String)} and an optional XML config
  * resource URI. When the URI is {@code null}, the provider's default configuration
  * is used. When non-null, it must resolve on the runtime classpath.</p>
  *
