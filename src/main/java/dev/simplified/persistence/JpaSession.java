@@ -192,7 +192,7 @@ public final class JpaSession {
 
     /** Creates a JCache configuration with the given name and TTL, reusing existing caches. */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
-        CacheManager cacheManager = Caching.getCachingProvider().getCacheManager();
+        CacheManager cacheManager = this.resolveCacheManager();
 
         if (cacheManager.getCache(cacheName, Object.class, Object.class) != null)
             return;
@@ -202,6 +202,35 @@ public final class JpaSession {
             .setExpiryPolicyFactory(ModifiedExpiryPolicy.factoryOf(duration));
 
         cacheManager.createCache(cacheName, cacheConfiguration);
+    }
+
+    /**
+     * Resolves the JCache {@link CacheManager} for the {@link JpaCacheProvider} configured
+     * on {@link #config}.
+     *
+     * <p>Looks up the provider by its fully-qualified class name and, when the provider
+     * declares a non-null {@link JpaCacheProvider#getConfigUri() configUri}, opens the
+     * cache manager against that classpath resource URI. Otherwise the provider's default
+     * cache manager is returned.</p>
+     *
+     * @return the cache manager for the configured provider
+     * @throws javax.cache.CacheException if the provider class is not on the classpath
+     */
+    private @NotNull CacheManager resolveCacheManager() {
+        JpaCacheProvider provider = this.config.getCacheProvider();
+        javax.cache.spi.CachingProvider cachingProvider = Caching.getCachingProvider(provider.getProviderClassName());
+
+        if (provider.getConfigUri() == null)
+            return cachingProvider.getCacheManager();
+
+        try {
+            return cachingProvider.getCacheManager(
+                new java.net.URI(provider.getConfigUri()),
+                cachingProvider.getDefaultClassLoader()
+            );
+        } catch (java.net.URISyntaxException ex) {
+            throw new JpaException(ex, "Invalid cache provider config URI '%s'", provider.getConfigUri());
+        }
     }
 
     /** Assembles Hibernate and HikariCP properties from the {@link JpaConfig}. */
@@ -657,7 +686,7 @@ public final class JpaSession {
         this.sessionFactory.close();
         StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
 
-        CacheManager cacheManager = Caching.getCachingProvider().getCacheManager();
+        CacheManager cacheManager = this.resolveCacheManager();
         this.getModels().forEach(model -> {
             if (cacheManager.getCache(model.getName(), Object.class, Object.class) != null)
                 cacheManager.destroyCache(model.getName());

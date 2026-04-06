@@ -55,6 +55,7 @@ public final class JpaConfig {
     private final @NotNull CacheMissingStrategy missingCacheStrategy;
     private final long queryResultsTTL;
     private final long defaultCacheExpiryMs;
+    private final @NotNull JpaCacheProvider cacheProvider;
     private final @NotNull GsonSettings gsonSettings;
     private final @NotNull RepositoryFactory repositoryFactory;
     private @NotNull Logging.Level logLevel = Logging.Level.WARN;
@@ -181,6 +182,8 @@ public final class JpaConfig {
         @BuildFlag(nonNull = true)
         private long queryResultsTTL = 0;
         private long defaultCacheExpiryMs = 30_000;
+        @BuildFlag(nonNull = true)
+        private JpaCacheProvider cacheProvider = JpaCacheProvider.EHCACHE;
         private GsonSettings gsonSettings = GsonSettings.builder().build();
         private @Nullable RepositoryFactory repositoryFactory;
 
@@ -298,6 +301,12 @@ public final class JpaConfig {
             return this;
         }
 
+        /** Sets the {@link JpaCacheProvider} backing the JCache (JSR-107) second-level cache. */
+        public Builder withCacheProvider(@NotNull JpaCacheProvider cacheProvider) {
+            this.cacheProvider = cacheProvider;
+            return this;
+        }
+
         /** Sets the database schema name. */
         public Builder withSchema(@NotNull String schema) {
             return this.withSchema(Optional.of(schema));
@@ -352,6 +361,7 @@ public final class JpaConfig {
                 this.missingCacheStrategy,
                 this.queryResultsTTL,
                 this.defaultCacheExpiryMs,
+                this.cacheProvider,
                 this.gsonSettings,
                 this.repositoryFactory != null ? this.repositoryFactory : RepositoryFactory.builder().build()
             );
