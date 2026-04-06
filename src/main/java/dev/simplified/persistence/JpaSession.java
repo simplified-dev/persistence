@@ -1,15 +1,15 @@
 package dev.simplified.persistence;
 
 import com.google.gson.Gson;
-import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.source.Source;
-import dev.simplified.persistence.type.TypeRegistrar;
-import dev.simplified.scheduler.Scheduler;
-import dev.simplified.util.Logging;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.type.TypeRegistrar;
 import dev.simplified.reflection.Reflection;
+import dev.simplified.scheduler.Scheduler;
+import dev.simplified.util.Logging;
 import dev.simplified.util.time.Stopwatch;
 import lombok.Cleanup;
 import lombok.Getter;
@@ -192,7 +192,7 @@ public final class JpaSession {
 
     /** Creates a JCache configuration with the given name and TTL, reusing existing caches. */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
-        CacheManager cacheManager = this.resolveCacheManager();
+        @Cleanup CacheManager cacheManager = this.resolveCacheManager();
 
         if (cacheManager.getCache(cacheName, Object.class, Object.class) != null)
             return;
