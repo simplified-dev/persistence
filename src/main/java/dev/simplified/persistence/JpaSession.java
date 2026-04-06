@@ -5,7 +5,7 @@ import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.type.TypeRegistrar;
 import dev.simplified.scheduler.Scheduler;
-import dev.simplified.util.LogUtil;
+import dev.simplified.util.Logging;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
@@ -13,8 +13,6 @@ import dev.simplified.reflection.Reflection;
 import dev.simplified.util.time.Stopwatch;
 import lombok.Cleanup;
 import lombok.Getter;
-import lombok.extern.log4j.Log4j2;
-import org.apache.logging.log4j.Level;
 import org.ehcache.core.Ehcache;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -92,7 +90,6 @@ import java.util.function.Function;
  * @see SessionManager
  */
 @Getter
-@Log4j2
 public final class JpaSession {
 
     /**
@@ -232,11 +229,11 @@ public final class JpaSession {
             this.config.getSchema()
         ));
 
-        properties.put("hibernate.jdbc.log.warnings", this.config.isLogLevel(Level.WARN));
-        properties.put("hibernate.show_sql", this.config.isLogLevel(Level.DEBUG));
-        properties.put("hibernate.format_sql", this.config.isLogLevel(Level.TRACE));
-        properties.put("hibernate.highlight_sql", this.config.isLogLevel(Level.TRACE));
-        properties.put("hibernate.use_sql_comments", this.config.isLogLevel(Level.DEBUG));
+        properties.put("hibernate.jdbc.log.warnings", this.config.isLogLevel(Logging.Level.WARN));
+        properties.put("hibernate.show_sql", this.config.isLogLevel(Logging.Level.DEBUG));
+        properties.put("hibernate.format_sql", this.config.isLogLevel(Logging.Level.TRACE));
+        properties.put("hibernate.highlight_sql", this.config.isLogLevel(Logging.Level.TRACE));
+        properties.put("hibernate.use_sql_comments", this.config.isLogLevel(Logging.Level.DEBUG));
 
         properties.put("hibernate.generate_statistics", this.config.isUsingStatistics());
 
@@ -250,7 +247,7 @@ public final class JpaSession {
         // Cache
         properties.put("hibernate.cache.region.factory_class", "jcache");
         properties.put("hibernate.cache.use_reference_entries", true);
-        properties.put("hibernate.cache.use_structured_entries", this.config.isLogLevel(Level.DEBUG));
+        properties.put("hibernate.cache.use_structured_entries", this.config.isLogLevel(Logging.Level.DEBUG));
         properties.put("hibernate.cache.use_query_cache", this.config.isUsingQueryCache());
         properties.put("hibernate.cache.use_second_level_cache", this.config.isUsing2ndLevelCache());
         properties.put("hibernate.jakarta.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
@@ -269,9 +266,9 @@ public final class JpaSession {
             .stream()
             .map(this::buildCacheConfiguration)
             .peek(metadataSources::addAnnotatedClass)
-            .forEach(modelType -> LogUtil.setLevel(
+            .forEach(modelType -> Logging.setLevel(
                 String.format("%s-%s", Ehcache.class, modelType.getName()),
-                this.config.getLogLevel().name()
+                this.config.getLogLevel()
             ));
 
         return metadataSources;
@@ -404,7 +401,7 @@ public final class JpaSession {
                 repo.refresh(false);
                 dueModels.add(model);
             } catch (Exception ex) {
-                log.warn("Phase 1: Failed to refresh data for {}", model.getSimpleName(), ex);
+                throw new JpaException(ex, "Failed to refresh data for '%s'", model.getSimpleName());
             }
         }
 
@@ -419,7 +416,7 @@ public final class JpaSession {
             try {
                 repo.removeStaleEntities();
             } catch (Exception ex) {
-                log.warn("Phase 2: Failed to remove stale entities for {}", model.getSimpleName(), ex);
+                throw new JpaException(ex, "Failed to remove stale entities for '%s'", model.getSimpleName());
             }
         }
 
@@ -433,7 +430,7 @@ public final class JpaSession {
                 repo.evict();
                 repo.stream().close();
             } catch (Exception ex) {
-                log.warn("Phase 3: Failed to warm cache for {}", model.getSimpleName(), ex);
+                throw new JpaException(ex, "Failed to warm cache for '%s'", model.getSimpleName());
             }
         }
     }
@@ -551,7 +548,6 @@ public final class JpaSession {
             throw new JpaException(e);
         }
 
-        log.info("Exported {} entities to {}", this.models.size(), dbFile);
     }
 
     /**

@@ -11,8 +11,6 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backe
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
-  - [Gradle (Kotlin DSL)](#gradle-kotlin-dsl)
-  - [Gradle (Groovy DSL)](#gradle-groovy-dsl)
 - [Usage](#usage)
 - [Supported Drivers](#supported-drivers)
 - [Architecture](#architecture)
@@ -24,14 +22,16 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backe
 
 ## Features
 
-- **Repository pattern** - Read-only cached `Repository` interface with `JpaRepository` implementation
-- **Session management** - `SessionManager` and `JpaSession` for Hibernate session lifecycle
-- **L2 caching** - EhCache-backed second-level cache with per-entity TTL via `@CacheExpiry` annotation
+- **Repository pattern** - Read-only cached `Repository` interface with `JpaRepository` implementation for CRUD operations, cache eviction, and stream-based querying
+- **Session management** - `SessionManager` registry for multiple concurrent `JpaSession` instances with cross-session repository lookup, reconnection, and coordinated shutdown
+- **L2 caching** - EhCache-backed second-level cache with per-entity TTL via `@CacheExpiry` annotation and configurable cache concurrency strategies
 - **Custom Hibernate types** - Gson-backed type converters for JSON columns (`GsonJsonType`, `GsonListType`, `GsonMapType`, `GsonOptionalType`)
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
-- **Type converters** - Built-in converters for `Color`, `UUID`, and Unicode strings
-- **JSON persistence sources** - `Source` interface with `JsonSource` implementation for file-based data
-- **Repository factory** - `RepositoryFactory` for creating and managing repository instances
+- **Type converters** - Built-in JPA attribute converters for `Color`, `UUID`, and Unicode strings
+- **JSON persistence sources** - `Source` interface with `JsonSource` implementation for file-based data loading
+- **Repository factory** - `RepositoryFactory` with topological entity sorting, per-type source registration, and classpath-based model discovery
+- **Foreign ID resolution** - `@ForeignIds` transient field population for cross-entity relationships loaded from non-relational sources
+- **Stale entity cleanup** - Automatic removal of database rows not present in the latest source load, in FK-safe reverse topological order
 
 ## Getting Started
 
@@ -47,7 +47,8 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backe
 
 Published via [JitPack](https://jitpack.io/#simplified-dev/persistence). Add the JitPack repository and dependency to your build file.
 
-### Gradle (Kotlin DSL)
+<details>
+<summary>Gradle (Kotlin DSL)</summary>
 
 ```kotlin
 repositories {
@@ -60,7 +61,10 @@ dependencies {
 }
 ```
 
-### Gradle (Groovy DSL)
+</details>
+
+<details>
+<summary>Gradle (Groovy DSL)</summary>
 
 ```groovy
 repositories {
@@ -72,6 +76,8 @@ dependencies {
     implementation 'com.github.simplified-dev:persistence:master-SNAPSHOT'
 }
 ```
+
+</details>
 
 > [!TIP]
 > Replace `master-SNAPSHOT` with a specific commit hash or tag for reproducible builds.
@@ -85,6 +91,8 @@ import dev.simplified.persistence.CacheExpiry;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.*;
 
+import java.util.concurrent.TimeUnit;
+
 @Entity
 @CacheExpiry(duration = 5, unit = TimeUnit.MINUTES)
 public class User extends JpaModel {
@@ -95,25 +103,31 @@ public class User extends JpaModel {
 }
 ```
 
-Create a repository and query cached data:
+Configure and connect a session:
 
 ```java
-import dev.simplified.persistence.JpaRepository;
-import dev.simplified.persistence.SessionManager;
 import dev.simplified.persistence.JpaConfig;
+import dev.simplified.persistence.SessionManager;
+import dev.simplified.persistence.driver.MariaDbDriver;
 
-// Configure and open a session
-JpaConfig config = JpaConfig.builder()
-    .driver(new MariaDbDriver("localhost", 3306, "mydb"))
-    .username("root")
-    .password("secret")
+JpaConfig config = JpaConfig.common(new MariaDbDriver(), "mydb")
+    .withHost("localhost")
+    .withPort(3306)
+    .withUser("root")
+    .withPassword("secret")
     .build();
 
-SessionManager sessionManager = new SessionManager(config);
-JpaRepository<User, Long> userRepo = new JpaRepository<>(sessionManager, User.class);
+SessionManager sessionManager = new SessionManager();
+sessionManager.connect(config);
+```
 
-// Cached read-only access
-User user = userRepo.findById(1L);
+Query cached data through the repository:
+
+```java
+import dev.simplified.persistence.Repository;
+
+Repository<User> userRepo = sessionManager.getRepository(User.class);
+ConcurrentList<User> users = userRepo.findAll();
 ```
 
 ## Supported Drivers
@@ -138,7 +152,7 @@ User user = userRepo.findById(1L);
 | Package | Description |
 |---------|-------------|
 | `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `RepositoryFactory`, `JpaConfig`, `JpaModel`, `@CacheExpiry`) |
-| `dev.simplified.persistence.converter` | Hibernate attribute converters (`ColorConverter`, `UUIDConverter`, `UnicodeConverter`) |
+| `dev.simplified.persistence.converter` | JPA attribute converters (`ColorConverter`, `UUIDConverter`, `UnicodeConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
 | `dev.simplified.persistence.source` | Data source interfaces and JSON file-based implementation |
@@ -189,7 +203,6 @@ persistence/
 │   │       └── TypeRegistrar.java
 │   └── test/
 ├── build.gradle.kts
-├── settings.gradle.kts
 ├── gradle/
 │   └── libs.versions.toml
 ├── LICENSE.md
@@ -207,9 +220,8 @@ persistence/
 | [MariaDB Connector/J](https://mariadb.com/kb/en/mariadb-connector-j/) | 3.5.3 | Implementation |
 | [H2 Database](https://h2database.com/) | 2.3.232 | Implementation |
 | [EhCache](https://www.ehcache.org/) | 3.10.8 | Implementation |
-| [Log4j2](https://logging.apache.org/log4j/) | 2.25.3 | API |
+| [Log4j2](https://logging.apache.org/log4j/) | 2.25.3 | API (log level configuration and `@Log4j2` logging) |
 | [JetBrains Annotations](https://github.com/JetBrains/java-annotations) | 26.0.2 | API |
-| [Simplified Annotations](https://github.com/SkyBlock-Simplified/Annotation-Processor) | 1.0.4 | API |
 | [Lombok](https://projectlombok.org/) | 1.18.36 | Compile-only |
 | [JUnit 5](https://junit.org/junit5/) | 5.11.4 | Test |
 | [Hamcrest](http://hamcrest.org/) | 2.2 | Test |

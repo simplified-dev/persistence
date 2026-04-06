@@ -27,10 +27,6 @@ dependencies {
     // JetBrains Annotations
     api(libs.annotations)
 
-    // Simplified Annotations
-    api(libs.simplified.annotations)
-    annotationProcessor(libs.simplified.annotations)
-
     // Logging
     api(libs.log4j2.api)
     implementation(libs.log4j2.core)

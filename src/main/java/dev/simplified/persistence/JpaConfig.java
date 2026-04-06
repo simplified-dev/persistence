@@ -3,7 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.driver.MariaDbDriver;
 import dev.simplified.persistence.source.Source;
-import dev.simplified.util.LogUtil;
+import dev.simplified.util.Logging;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.builder.BuildFlag;
@@ -11,7 +11,6 @@ import dev.simplified.util.SystemUtil;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import org.apache.logging.log4j.Level;
 import org.ehcache.core.Ehcache;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.jetbrains.annotations.NotNull;
@@ -44,11 +43,11 @@ public final class JpaConfig {
 
     private final @NotNull UUID uniqueId = UUID.randomUUID();
     private final @NotNull JpaDriver driver;
-private final @NotNull String host;
-private final int port;
-private final @NotNull String schema;
-private final @NotNull String user;
-private final @NotNull String password;
+    private final @NotNull String host;
+    private final int port;
+    private final @NotNull String schema;
+    private final @NotNull String user;
+    private final @NotNull String password;
     private final boolean usingQueryCache;
     private final boolean using2ndLevelCache;
     private final boolean usingStatistics;
@@ -58,19 +57,19 @@ private final @NotNull String password;
     private final long defaultCacheExpiryMs;
     private final @NotNull GsonSettings gsonSettings;
     private final @NotNull RepositoryFactory repositoryFactory;
-    private @NotNull Level logLevel = Level.WARN;
+    private @NotNull Logging.Level logLevel = Logging.Level.WARN;
 
     /**
      * Checks whether the current log level includes the given level.
      *
      * <p>Returns {@code true} when this config's log level is equal to or more verbose than
-     * {@code level} (i.e. its {@code intLevel} is greater than or equal to the given level's).</p>
+     * {@code level}.</p>
      *
      * @param level the log level to compare against
      * @return {@code true} if the current log level encompasses {@code level}
      */
-    public boolean isLogLevel(@NotNull Level level) {
-        return this.logLevel.intLevel() >= level.intLevel();
+    public boolean isLogLevel(@NotNull Logging.Level level) {
+        return this.logLevel.includes(level);
     }
 
     /**
@@ -106,7 +105,7 @@ private final @NotNull String password;
         return builder()
             .withDriver(driver)
             .withSchema(schema)
-            .withLogLevel(Level.WARN)
+            .withLogLevel(Logging.Level.WARN)
             .isUsingQueryCache()
             .isUsing2ndLevelCache()
             .withCacheConcurrencyStrategy(CacheConcurrencyStrategy.READ_WRITE)
@@ -130,25 +129,23 @@ private final @NotNull String password;
      * <p>Affected loggers include Hibernate, EhCache, JBoss Logging, Logback, the JDBC driver,
      * and per-entity cache regions. In SQL mode, the HikariCP logger is also updated.</p>
      *
-     * <p>Delegates to {@link LogUtil} for backend-agnostic level propagation. Works with
-     * both Log4j2 Core and Logback (via {@code log4j-to-slf4j} bridge).</p>
+     * <p>Delegates to {@link Logging} for backend-agnostic level propagation.</p>
      *
      * @param logLevel the new log level to apply
      */
-    public void setLogLevel(@NotNull Level logLevel) {
+    public void setLogLevel(@NotNull Logging.Level logLevel) {
         this.logLevel = logLevel;
-        String levelName = logLevel.name();
-        LogUtil.setLevel("org.jboss.logging", levelName);
-        LogUtil.setLevel("ch.qos.logback", levelName);
-        LogUtil.setLevel("org.hibernate", levelName);
-        LogUtil.setLevel("org.ehcache", levelName);
-        LogUtil.setLevel(this.getDriver().getClassPath(), levelName);
-        LogUtil.setLevel(String.format("%s-%s", Ehcache.class, "default-update-timestamps-region"), levelName);
-        LogUtil.setLevel(String.format("%s-%s", Ehcache.class, "default-query-results-region"), levelName);
-        this.getRepositoryFactory().getModels().forEach(model -> LogUtil.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), levelName));
+        Logging.setLevel("org.jboss.logging", logLevel);
+        Logging.setLevel("ch.qos.logback", logLevel);
+        Logging.setLevel("org.hibernate", logLevel);
+        Logging.setLevel("org.ehcache", logLevel);
+        Logging.setLevel(this.getDriver().getClassPath(), logLevel);
+        Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-update-timestamps-region"), logLevel);
+        Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-query-results-region"), logLevel);
+        this.getRepositoryFactory().getModels().forEach(model -> Logging.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), logLevel));
 
         if (!this.getDriver().isEmbedded())
-            LogUtil.setLevel("com.zaxxer.hikari", levelName);
+            Logging.setLevel("com.zaxxer.hikari", logLevel);
     }
 
     /**
@@ -173,7 +170,7 @@ private final @NotNull String password;
         private Optional<String> password = Optional.empty();
 
         @BuildFlag(nonNull = true)
-        private Level logLevel = Level.WARN;
+        private Logging.Level logLevel = Logging.Level.WARN;
         private boolean usingQueryCache = false;
         private boolean using2ndLevelCache = false;
         private boolean usingStatistics = false;
@@ -256,7 +253,7 @@ private final @NotNull String password;
         }
 
         /** Sets the log level applied at {@link #build()} time. */
-        public Builder withLogLevel(@NotNull Level level) {
+        public Builder withLogLevel(@NotNull Logging.Level level) {
             this.logLevel = level;
             return this;
         }

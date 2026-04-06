@@ -16,7 +16,6 @@ import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
 import lombok.Getter;
 import lombok.experimental.Accessors;
-import lombok.extern.log4j.Log4j2;
 import org.hibernate.NonUniqueObjectException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -53,7 +52,6 @@ import java.util.function.Function;
  * @see JpaSession
  */
 @Getter
-@Log4j2
 public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
     /** The owning session providing Hibernate access and configuration. */
