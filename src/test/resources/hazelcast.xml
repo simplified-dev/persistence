@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hazelcast xmlns="http://www.hazelcast.com/schema/config"
+           xsi:schemaLocation="http://www.hazelcast.com/schema/config
+           http://www.hazelcast.com/schema/config/hazelcast-config-5.6.xsd"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <cluster-name>skyblock-test</cluster-name>
+
+    <network>
+        <port auto-increment="true" port-count="20">5801</port>
+        <join>
+            <auto-detection enabled="false"/>
+            <multicast enabled="false"/>
+            <tcp-ip enabled="false"/>
+        </join>
+    </network>
+
+    <!-- Wildcard cache region: matches every Hibernate-generated region name. Without this,
+         a region created via JCache CacheManager.createCache uses the provider default config
+         and is invisible to Management Center / Statistics. -->
+    <cache name="*">
+        <statistics-enabled>true</statistics-enabled>
+        <management-enabled>true</management-enabled>
+        <eviction size="5000" max-size-policy="ENTRY_COUNT" eviction-policy="LRU"/>
+    </cache>
+
+</hazelcast>

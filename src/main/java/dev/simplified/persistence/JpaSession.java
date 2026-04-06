@@ -281,6 +281,16 @@ public final class JpaSession {
         properties.put("hibernate.cache.use_second_level_cache", this.config.isUsing2ndLevelCache());
         properties.put("hibernate.jakarta.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
 
+        // Pin the JCache provider for Hibernate's internal JCacheRegionFactory so it does not
+        // call the no-arg Caching.getCachingProvider() lookup, which throws when more than one
+        // provider sits on the runtime classpath (e.g. EhCache + Hazelcast in the test suite).
+        // Property names use the hibernate.javax.cache.* prefix per ConfigSettings.PROP_PREFIX
+        // in hibernate-jcache 7.3 - the jakarta-prefixed equivalents are not honored.
+        JpaCacheProvider cacheProvider = this.config.getCacheProvider();
+        properties.put("hibernate.javax.cache.provider", cacheProvider.getProviderClassName());
+        if (cacheProvider.getConfigUri() != null)
+            properties.put("hibernate.javax.cache.uri", cacheProvider.getConfigUri());
+
         if (this.config.getCacheConcurrencyStrategy() != CacheConcurrencyStrategy.NONE)
             properties.put("hibernate.cache.default_cache_concurrency_strategy", this.config.getCacheConcurrencyStrategy().toAccessType().getExternalName());
 

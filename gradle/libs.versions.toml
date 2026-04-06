@@ -9,6 +9,7 @@ gson = "2.11.0"
 mariadb = "3.5.3"
 h2 = "2.3.232"
 ehcache = "3.10.8"
+hazelcast = "5.6.0"
 hibernate = "7.3.0.Final"
 
 [libraries]
@@ -25,6 +26,7 @@ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 mariadb = { group = "org.mariadb.jdbc", name = "mariadb-java-client", version.ref = "mariadb" }
 h2 = { group = "com.h2database", name = "h2", version.ref = "h2" }
 ehcache = { group = "org.ehcache", name = "ehcache", version.ref = "ehcache" }
+hazelcast = { group = "com.hazelcast", name = "hazelcast", version.ref = "hazelcast" }
 hibernate-core = { group = "org.hibernate.orm", name = "hibernate-core", version.ref = "hibernate" }
 hibernate-hikaricp = { group = "org.hibernate.orm", name = "hibernate-hikaricp", version.ref = "hibernate" }
 hibernate-jcache = { group = "org.hibernate.orm", name = "hibernate-jcache", version.ref = "hibernate" }
