@@ -30,11 +30,11 @@ public enum JpaCacheProvider {
     /** EhCache 3 JSR-107 provider - the default and the only provider on the classpath today. */
     EHCACHE("org.ehcache.jsr107.EhcacheCachingProvider", null),
 
-    /** Hazelcast client-mode provider - connects to a remote Hazelcast cluster via {@code hazelcast-client.xml}. */
-    HAZELCAST_CLIENT("com.hazelcast.client.cache.impl.HazelcastClientCachingProvider", "hazelcast-client.xml"),
+    /** Hazelcast client-mode provider - connects to a remote cluster, auto-discovers {@code hazelcast-client.xml} from the classpath. */
+    HAZELCAST_CLIENT("com.hazelcast.client.cache.impl.HazelcastClientCachingProvider", null),
 
-    /** Hazelcast embedded-mode provider - bootstraps an in-process Hazelcast member from {@code hazelcast.xml}. */
-    HAZELCAST_EMBEDDED("com.hazelcast.cache.impl.HazelcastServerCachingProvider", "hazelcast.xml");
+    /** Hazelcast embedded-mode provider - bootstraps an in-process member, auto-discovers {@code hazelcast.xml} from the classpath. */
+    HAZELCAST_EMBEDDED("com.hazelcast.cache.impl.HazelcastServerCachingProvider", null);
 
     /** Fully-qualified JSR-107 {@code CachingProvider} class name passed to {@link javax.cache.Caching#getCachingProvider(String)}. */
     private final @NotNull String providerClassName;

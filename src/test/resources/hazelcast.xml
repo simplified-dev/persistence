@@ -15,13 +15,4 @@
         </join>
     </network>
 
-    <!-- Wildcard cache region: matches every Hibernate-generated region name. Without this,
-         a region created via JCache CacheManager.createCache uses the provider default config
-         and is invisible to Management Center / Statistics. -->
-    <cache name="*">
-        <statistics-enabled>true</statistics-enabled>
-        <management-enabled>true</management-enabled>
-        <eviction size="5000" max-size-policy="ENTRY_COUNT" eviction-policy="LRU"/>
-    </cache>
-
 </hazelcast>
