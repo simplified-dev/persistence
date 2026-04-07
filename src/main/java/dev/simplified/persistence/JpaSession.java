@@ -432,7 +432,7 @@ public final class JpaSession {
             if (repo.getCacheDuration().isZero())
                 continue;
 
-            java.time.Duration elapsed = java.time.Duration.between(repo.getLastRefresh().getCompletedAt(), Instant.now());
+            java.time.Duration elapsed = java.time.Duration.between(repo.getLastRefresh().completedAt(), Instant.now());
             if (elapsed.compareTo(repo.getCacheDuration()) < 0)
                 continue;
 

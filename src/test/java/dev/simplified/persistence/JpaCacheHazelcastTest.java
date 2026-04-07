@@ -154,7 +154,7 @@ class JpaCacheHazelcastTest {
 
         JpaRepository<TestParentModel> repo = (JpaRepository<TestParentModel>) session.getRepository(TestParentModel.class);
         assertNotNull(repo.getInitialLoad(), "Initial load stopwatch should be set");
-        assertTrue(repo.getInitialLoad().getDurationMillis() >= 0, "Initial load duration should be non-negative");
+        assertTrue(repo.getInitialLoad().durationMillis() >= 0, "Initial load duration should be non-negative");
     }
 
     @Test
