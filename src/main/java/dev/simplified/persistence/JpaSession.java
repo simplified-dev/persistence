@@ -192,7 +192,7 @@ public final class JpaSession {
 
     /** Creates a JCache configuration with the given name and TTL, reusing existing caches. */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
-        @Cleanup CacheManager cacheManager = this.resolveCacheManager();
+        CacheManager cacheManager = this.resolveCacheManager();
 
         if (cacheManager.getCache(cacheName, Object.class, Object.class) != null)
             return;
@@ -279,7 +279,7 @@ public final class JpaSession {
         properties.put("hibernate.cache.use_structured_entries", this.config.isLogLevel(Logging.Level.DEBUG));
         properties.put("hibernate.cache.use_query_cache", this.config.isUsingQueryCache());
         properties.put("hibernate.cache.use_second_level_cache", this.config.isUsing2ndLevelCache());
-        properties.put("hibernate.jakarta.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
+        properties.put("hibernate.javax.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
 
         // Pin the JCache provider for Hibernate's internal JCacheRegionFactory so it does not
         // call the no-arg Caching.getCachingProvider() lookup, which throws when more than one
