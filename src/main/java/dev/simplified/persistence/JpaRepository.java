@@ -4,10 +4,12 @@ import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
 import dev.simplified.gson.PostInit;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
+import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.util.time.Stopwatch;
 import jakarta.persistence.Id;
@@ -32,6 +34,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 /**
  * Default {@link Repository} implementation backed by an optional {@link Source}
@@ -120,39 +123,63 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /** {@inheritDoc} */
     @Override
     public @NotNull SingleStream<T> stream() throws JpaException {
-        return this.getSession().with((Function<Session, ? extends SingleStream<T>>) this::stream);
+        Session scopedSession = this.getSession().openScopedSession();
+        try {
+            return this.stream(scopedSession);
+        } catch (RuntimeException ex) {
+            try {
+                scopedSession.close();
+            } catch (Exception suppressed) {
+                ex.addSuppressed(suppressed);
+            }
+            throw ex;
+        }
     }
 
     /**
-     * Executes a Hibernate criteria query within the given session, resolves any
-     * {@link ForeignIds} transient fields, applies the optional {@link #streamPeek},
-     * and returns the results as a {@link SingleStream}.
+     * Executes a Hibernate criteria query as a lazy {@code getResultStream()} within the
+     * given session, attaches an in-memory {@link ForeignIds} resolver and the optional
+     * {@link #streamPeek} as {@code peek()} steps, and returns a {@link LifecycleSingleStream}
+     * that owns the session and closes it on the first terminal operation.
      *
-     * @param session the Hibernate session to query within
-     * @return a stream of all entities of type {@code T}
-     * @throws JpaException if the query fails
+     * <p>The session passed in MUST be a fresh, caller-owned scoped session - typically opened
+     * via {@link JpaSession#openScopedSession()}. The returned stream takes ownership of the
+     * session lifecycle and closes it inside every terminal listed on
+     * {@link LifecycleSingleStream}.</p>
+     *
+     * <p>For entities with {@link ForeignIds} fields, the FK target lookup maps are pre-built
+     * via independent {@code targetRepo.stream()} sessions BEFORE the parent cursor is opened.
+     * Per-element {@code session.find()} from inside a {@code peek} step would close the
+     * parent's open {@code ResultSet} on single-cursor drivers like H2 (HHH-style "object is
+     * already closed" exception), so the only safe path is to materialize the lookup tables
+     * up front and use pure in-memory map access during peek.</p>
+     *
+     * @param session the caller-owned Hibernate session, transferred to the returned stream
+     * @return a lifecycle-aware stream of all entities of type {@code T}
+     * @throws JpaException if criteria query construction fails
      */
     public @NotNull SingleStream<T> stream(@NotNull Session session) throws JpaException {
         try {
+            // Pre-build FK lookup maps via independent sessions BEFORE opening the parent
+            // cursor. See method Javadoc for why per-element find() inside peek is unsafe.
+            ConcurrentMap<String, ConcurrentMap<String, JpaModel>> fkLookups = this.hasForeignIds()
+                ? this.buildForeignIdLookups()
+                : Concurrent.newMap();
+
             CriteriaBuilder criteriaBuilder = session.getCriteriaBuilder();
             CriteriaQuery<T> criteriaQuery = criteriaBuilder.createQuery(this.getType());
             Root<T> rootEntry = criteriaQuery.from(this.getType());
             criteriaQuery = criteriaQuery.select(rootEntry);
 
-            List<T> results = session.createQuery(criteriaQuery)
-                .setCacheRegion(this.getType().getName())
-                .setCacheable(true)
-                .getResultList();
+            Stream<T> jdkStream = session.createQuery(criteriaQuery).getResultStream();
 
             if (this.hasForeignIds())
-                this.resolveForeignIds(results);
-
-            SingleStream<T> result = SingleStream.of(results);
+                jdkStream = jdkStream.peek(entity -> this.resolveForeignIdsForOne(entity, fkLookups));
 
             if (this.streamPeek.isPresent())
-                result = result.peek(this.streamPeek.get());
+                jdkStream = jdkStream.peek(this.streamPeek.get());
 
-            return result;
+            return LifecycleSingleStream.of(jdkStream, session);
         } catch (Exception exception) {
             throw new JpaException(exception);
         }
@@ -175,11 +202,9 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
         try {
             this.source.ifPresent(this::persistToDatabase);
-            
-            if (evictWarmCache) {
+
+            if (evictWarmCache)
                 this.evict();
-                this.stream().close();
-            }
         } catch (JpaException jpaEx) {
             throw jpaEx;
         } catch (Exception ex) {
@@ -257,56 +282,91 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Resolves {@link ForeignIds}-annotated transient fields on loaded entities by
-     * matching ID strings against the target entity's {@link Id} field from its repository.
+     * Pre-builds the in-memory lookup maps for every {@link ForeignIds}-annotated field on
+     * {@code T}. For each FK field this materializes the target repository (via an
+     * independent scoped session) into a map keyed by the target's {@link Id} value.
      *
-     * @param entities the entities whose foreign ID fields should be populated
+     * <p>Building these maps BEFORE the parent stream's cursor opens is the only safe
+     * pattern on single-cursor JDBC drivers like H2 - issuing a {@code find()} on the
+     * parent session inside a {@code peek} step would close the parent's open
+     * {@code ResultSet} mid-iteration. The materialization is restricted to types whose
+     * {@code @ForeignIds} sibling collection is non-empty on at least one parent entity,
+     * but for simplicity we eagerly load every target type that any FK field references.</p>
+     *
+     * @return a map keyed by FK field name, whose value is a per-id lookup of target entities
      */
     @SuppressWarnings("unchecked")
-    private void resolveForeignIds(@NotNull List<T> entities) {
-        if (entities.isEmpty()) return;
-
+    private @NotNull ConcurrentMap<String, ConcurrentMap<String, JpaModel>> buildForeignIdLookups() {
+        ConcurrentMap<String, ConcurrentMap<String, JpaModel>> lookups = Concurrent.newMap();
         Reflection<?> reflection = new Reflection<>(this.getType());
 
         for (FieldAccessor<?> fieldAccessor : reflection.getFields()) {
             Optional<ForeignIds> annotation = fieldAccessor.getAnnotation(ForeignIds.class);
             if (annotation.isEmpty()) continue;
 
-            // Get the companion ID list field
-            FieldAccessor<Collection<String>> idsAccessor = reflection.getField(annotation.get().value());
-
-            // Determine target entity type from ConcurrentList<TargetType>
             ParameterizedType listType = (ParameterizedType) fieldAccessor.getGenericType();
             Class<? extends JpaModel> targetType = (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
 
-            // Find the @Id field on the target entity
             FieldAccessor<?> targetIdAccessor = new Reflection<>(targetType).getFields()
                 .stream()
                 .filter(fa -> fa.hasAnnotation(Id.class))
                 .findFirst()
                 .orElseThrow(() -> new JpaException("No @Id field found on entity: %s", targetType.getName()));
 
-            // Load all target entities once
             Repository<? extends JpaModel> targetRepo = this.getSession().getRepository(targetType);
             ConcurrentList<? extends JpaModel> allTargets = targetRepo.findAll();
 
-            for (T entity : entities) {
-                Collection<String> ids = idsAccessor.get(entity);
+            ConcurrentMap<String, JpaModel> idMap = Concurrent.newMap();
+            for (JpaModel target : allTargets) {
+                Object targetId = targetIdAccessor.get(target);
 
-                if (ids == null || ids.isEmpty()) {
-                    fieldAccessor.set(entity, Concurrent.newList());
-                    continue;
-                }
-
-                ConcurrentList<JpaModel> resolved = allTargets.stream()
-                    .filter(target -> {
-                        Object targetId = targetIdAccessor.get(target);
-                        return ids.contains(String.valueOf(targetId));
-                    })
-                    .collect(Concurrent.toList());
-
-                fieldAccessor.set(entity, resolved);
+                if (targetId != null)
+                    idMap.put(String.valueOf(targetId), target);
             }
+
+            lookups.put(fieldAccessor.getName(), idMap);
+        }
+
+        return lookups;
+    }
+
+    /**
+     * Resolves {@link ForeignIds}-annotated transient fields on a single entity by looking
+     * each id up in the pre-built {@code fkLookups} map, which was materialized before the
+     * parent stream's cursor opened (see {@link #buildForeignIdLookups()}).
+     *
+     * <p>Invoked from a {@code peek()} step on the lazy result stream. Pure in-memory
+     * lookup with no Hibernate involvement, so it cannot close the parent's
+     * {@code ResultSet}.</p>
+     *
+     * @param entity the entity whose foreign id fields should be populated
+     * @param fkLookups the pre-built lookup maps keyed by FK field name then by target id
+     */
+    @SuppressWarnings("unchecked")
+    private void resolveForeignIdsForOne(@NotNull T entity, @NotNull ConcurrentMap<String, ConcurrentMap<String, JpaModel>> fkLookups) {
+        Reflection<?> reflection = new Reflection<>(this.getType());
+
+        for (FieldAccessor<?> fieldAccessor : reflection.getFields()) {
+            Optional<ForeignIds> annotation = fieldAccessor.getAnnotation(ForeignIds.class);
+            if (annotation.isEmpty()) continue;
+
+            FieldAccessor<Collection<String>> idsAccessor = reflection.getField(annotation.get().value());
+
+            Collection<String> ids = idsAccessor.get(entity);
+
+            if (ids == null || ids.isEmpty()) {
+                fieldAccessor.set(entity, Concurrent.newList());
+                continue;
+            }
+
+            ConcurrentMap<String, JpaModel> idMap = fkLookups.get(fieldAccessor.getName());
+
+            ConcurrentList<JpaModel> resolved = ids.stream()
+                .map(idMap::get)
+                .filter(Objects::nonNull)
+                .collect(Concurrent.toList());
+
+            fieldAccessor.set(entity, resolved);
         }
     }
 
