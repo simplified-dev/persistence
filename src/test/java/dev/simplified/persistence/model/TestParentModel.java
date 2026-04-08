@@ -2,17 +2,22 @@ package dev.simplified.persistence.model;
 
 import dev.simplified.persistence.CacheExpiry;
 import dev.simplified.persistence.JpaModel;
+import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.Cache;
+import org.hibernate.annotations.CacheConcurrencyStrategy;
 
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 @Entity
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
 @Table(name = "test_parent")
 @CacheExpiry(value = 2, length = TimeUnit.SECONDS)
 @Getter

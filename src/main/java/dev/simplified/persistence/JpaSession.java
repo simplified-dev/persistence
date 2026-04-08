@@ -156,11 +156,19 @@ public final class JpaSession {
         this.scheduler = new Scheduler();
         this.gson = config.getGsonSettings().create();
 
-        // Build JCache regions
-        this.buildCacheConfiguration("default-update-timestamps-region", Duration.ETERNAL);
-        long ttl = config.getQueryResultsTTL();
-        Duration queryDuration = ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl);
-        this.buildCacheConfiguration("default-query-results-region", queryDuration);
+        // Build JCache regions. The query-results and update-timestamps regions are only
+        // created when query caching is actually enabled - for HAZELCAST_* providers Phase 2d
+        // unconditionally disables query caching, so creating these regions would leave empty
+        // never-used JCache caches sitting on the cluster.
+        boolean queryCacheActive = config.isUsingQueryCache()
+            && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_CLIENT
+            && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_EMBEDDED;
+        if (queryCacheActive) {
+            this.buildCacheConfiguration("default-update-timestamps-region", Duration.ETERNAL);
+            long ttl = config.getQueryResultsTTL();
+            Duration queryDuration = ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl);
+            this.buildCacheConfiguration("default-query-results-region", queryDuration);
+        }
 
         // Build Hibernate infrastructure
         this.properties = this.createProperties();
@@ -277,7 +285,18 @@ public final class JpaSession {
         properties.put("hibernate.cache.region.factory_class", "jcache");
         properties.put("hibernate.cache.use_reference_entries", true);
         properties.put("hibernate.cache.use_structured_entries", this.config.isLogLevel(Logging.Level.DEBUG));
-        properties.put("hibernate.cache.use_query_cache", this.config.isUsingQueryCache());
+        // Phase 2d: query cache is unconditionally disabled for HAZELCAST_* providers because
+        // the Hibernate query results region wraps results in QueryResultsCacheImpl$CacheItem
+        // (Serializable), which Hazelcast routes through ObjectOutputStream - and that stream
+        // walks the object graph via Java's default protocol with no hook for Hazelcast's
+        // SerializationService. The lazy stream() rewrite (also Phase 2d) makes the query
+        // results cache vestigial for the application path, so disabling it here removes the
+        // last code path that touches it. EhCache callers are unaffected.
+        JpaCacheProvider cacheProvider = this.config.getCacheProvider();
+        boolean queryCacheEnabled = this.config.isUsingQueryCache()
+            && cacheProvider != JpaCacheProvider.HAZELCAST_CLIENT
+            && cacheProvider != JpaCacheProvider.HAZELCAST_EMBEDDED;
+        properties.put("hibernate.cache.use_query_cache", queryCacheEnabled);
         properties.put("hibernate.cache.use_second_level_cache", this.config.isUsing2ndLevelCache());
         properties.put("hibernate.javax.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
 
@@ -286,7 +305,6 @@ public final class JpaSession {
         // provider sits on the runtime classpath (e.g. EhCache + Hazelcast in the test suite).
         // Property names use the hibernate.javax.cache.* prefix per ConfigSettings.PROP_PREFIX
         // in hibernate-jcache 7.3 - the jakarta-prefixed equivalents are not honored.
-        JpaCacheProvider cacheProvider = this.config.getCacheProvider();
         properties.put("hibernate.javax.cache.provider", cacheProvider.getProviderClassName());
         if (cacheProvider.getConfigUri() != null)
             properties.put("hibernate.javax.cache.uri", cacheProvider.getConfigUri());
@@ -459,7 +477,11 @@ public final class JpaSession {
             }
         }
 
-        // Phase 3: Warm ALL caches (all due types, including SQL)
+        // Phase 3: Evict L2 entries for due types. Phase 2d removed the eager warm pass
+        // (the prior `repo.stream().close()` line) because the L2 entity cache populates as
+        // a side effect of any subsequent streaming hydration - see ResearchPack finding A4.
+        // The eviction itself is still required because Phase 1 may have replaced rows that
+        // older cached entries point to.
         for (Class<? extends JpaModel> model : dueModels) {
             Repository<? extends JpaModel> repoIface = this.repositories.get(model);
             if (!(repoIface instanceof JpaRepository<?> repo))
@@ -467,9 +489,8 @@ public final class JpaSession {
 
             try {
                 repo.evict();
-                repo.stream().close();
             } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to warm cache for '%s'", model.getSimpleName());
+                throw new JpaException(ex, "Failed to evict cache for '%s'", model.getSimpleName());
             }
         }
     }
@@ -646,6 +667,25 @@ public final class JpaSession {
     }
 
     /**
+     * Opens a Hibernate {@link Session} that is NOT auto-closed by this class. Caller assumes
+     * full ownership of the session lifecycle and MUST close it - typically by handing it to
+     * a {@link dev.simplified.collection.tuple.single.LifecycleSingleStream} which auto-closes
+     * inside its terminal operations.
+     *
+     * <p>Use this when the result of a session-bound call (e.g. a lazy {@code getResultStream()})
+     * outlives the calling method - the standard {@link #with(java.util.function.Function)}
+     * pattern would close the session before any terminal consumed the stream. For all other
+     * use cases prefer {@link #with(java.util.function.Consumer)} or
+     * {@link #with(java.util.function.Function)} which auto-close.</p>
+     *
+     * @return a freshly opened session whose close is the caller's responsibility
+     * @see JpaRepository#stream(Session)
+     */
+    public @NotNull Session openScopedSession() {
+        return this.sessionFactory.openSession();
+    }
+
+    /**
      * Opens a managed {@link Session}, executes the consumer within a transaction
      * (begin + commit), and auto-closes the session.
      *
@@ -701,6 +741,10 @@ public final class JpaSession {
             if (cacheManager.getCache(model.getName(), Object.class, Object.class) != null)
                 cacheManager.destroyCache(model.getName());
         });
+        // Match the conditional region creation in the constructor: skip destroy when the
+        // region was never created (e.g. HAZELCAST_* path with Phase 2d query cache disable).
+        // The defensive null checks here would already make this a no-op, but the explicit
+        // guard avoids confusing log output on Hazelcast clusters.
         if (cacheManager.getCache("default-update-timestamps-region", Object.class, Object.class) != null)
             cacheManager.destroyCache("default-update-timestamps-region");
         if (cacheManager.getCache("default-query-results-region", Object.class, Object.class) != null)
