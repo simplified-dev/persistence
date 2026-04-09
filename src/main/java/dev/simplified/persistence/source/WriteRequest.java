@@ -158,6 +158,37 @@ public final class WriteRequest implements Serializable {
     }
 
     /**
+     * Returns a copy of this request with {@link #requestId} replaced by the
+     * given value and every other field preserved byte-identically.
+     *
+     * <p>Used by retry-escalation paths on the consumer side to rebuild a
+     * request while keeping the original producer's request id intact. The
+     * static factories {@link #upsert(Class, JpaModel, Gson, String)} and
+     * {@link #delete(Class, JpaModel, Gson, String)} mint a fresh random UUID
+     * per call, which is correct for new producer puts but wrong for a retry
+     * cycle - dead-letter queries and audit trails must correlate end-to-end
+     * on the initial producer's request id across every retry attempt.
+     *
+     * <p>This method replaces an earlier reflection-based rebuilder that the
+     * {@code simplified-data WriteBatchScheduler} used to bypass the private
+     * constructor before this helper existed.
+     *
+     * @param requestId the request id to substitute
+     * @return a new {@code WriteRequest} with the supplied request id and
+     *         every other field copied from this instance
+     */
+    public @NotNull WriteRequest withRequestId(@NotNull UUID requestId) {
+        return new WriteRequest(
+            requestId,
+            this.timestamp,
+            this.operation,
+            this.entityClassName,
+            this.entityJson,
+            this.sourceId
+        );
+    }
+
+    /**
      * Resolves {@link #entityClassName} to a live {@link JpaModel} subclass via
      * {@link Class#forName(String)}.
      *

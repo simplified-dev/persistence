@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.time.Instant;
+import java.util.UUID;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -123,6 +124,31 @@ class WriteRequestTest {
         assertThat(restored.getEntityClassName(), equalTo(original.getEntityClassName()));
         assertThat(restored.getEntityJson(), equalTo(original.getEntityJson()));
         assertThat(restored.getSourceId(), equalTo(original.getSourceId()));
+    }
+
+    @Test
+    @DisplayName("withRequestId replaces the request id and preserves every other field")
+    void withRequestIdReplacesIdAndPreservesOtherFields() {
+        TestParentModel entity = new TestParentModel();
+        entity.setId(5);
+        entity.setName("retry-me");
+
+        WriteRequest original = WriteRequest.upsert(TestParentModel.class, entity, GSON, SOURCE_ID);
+        UUID replacement = UUID.randomUUID();
+
+        WriteRequest swapped = original.withRequestId(replacement);
+
+        // New instance carries the replacement id with every other field copied byte-identically.
+        assertThat(swapped, is(notNullValue()));
+        assertThat(swapped.getRequestId(), equalTo(replacement));
+        assertThat(swapped.getTimestamp(), equalTo(original.getTimestamp()));
+        assertThat(swapped.getOperation(), equalTo(original.getOperation()));
+        assertThat(swapped.getEntityClassName(), equalTo(original.getEntityClassName()));
+        assertThat(swapped.getEntityJson(), equalTo(original.getEntityJson()));
+        assertThat(swapped.getSourceId(), equalTo(original.getSourceId()));
+
+        // Source instance is unchanged (immutability check).
+        assertThat(original.getRequestId(), not(equalTo(replacement)));
     }
 
     @Test
