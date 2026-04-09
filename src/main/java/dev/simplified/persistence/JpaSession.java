@@ -56,8 +56,11 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -483,6 +486,100 @@ public final class JpaSession {
         // The eviction itself is still required because Phase 1 may have replaced rows that
         // older cached entries point to.
         for (Class<? extends JpaModel> model : dueModels) {
+            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
+            if (!(repoIface instanceof JpaRepository<?> repo))
+                continue;
+
+            try {
+                repo.evict();
+            } catch (Exception ex) {
+                throw new JpaException(ex, "Failed to evict cache for '%s'", model.getSimpleName());
+            }
+        }
+    }
+
+    /**
+     * Performs an unconditional 3-phase refresh of the specified model subset,
+     * bypassing the {@link CacheExpiry} due-check that gates the scheduled
+     * {@link #refreshAll()} path.
+     *
+     * <p>Use this when an external signal (for example the Phase 4c asset poller
+     * detecting a {@code skyblock-data} commit change) requires an immediate
+     * targeted refresh rather than waiting for the next scheduler tick. The
+     * method is idempotent and safe to invoke repeatedly with the same set.
+     *
+     * <p>Execution mirrors {@link #refreshAll()}:
+     * <ol>
+     *     <li><b>Phase 1</b> - iterate {@link #models} in topological order and call
+     *         {@link JpaRepository#refresh(boolean)} for every model present in {@code targetModels}
+     *         that has a registered repository. Models with no source are no-ops.</li>
+     *     <li><b>Phase 2</b> - iterate the reversed model list and call
+     *         {@link JpaRepository#removeStaleEntities()} on the same target set so
+     *         FK-dependent children are removed before parents.</li>
+     *     <li><b>Phase 3</b> - iterate the target set and call {@link JpaRepository#evict()}
+     *         so subsequent queries repopulate the L2 entity cache from the newly-loaded rows.</li>
+     * </ol>
+     *
+     * <p>Entries in {@code targetModels} that do not match any registered repository
+     * are silently skipped - the caller (for example a poller that resolves model classes
+     * from a remote manifest) may legitimately reference classes that have been renamed or
+     * removed since the last schema revision, and crashing the refresh cycle over a
+     * dangling entry would defeat the poller's graceful-degradation design.
+     *
+     * <p>An empty or {@code null}-element-free target set is a no-op. Per-model failures
+     * are wrapped in {@link JpaException} with the model's simple name in the message.
+     *
+     * @param targetModels the model subset to refresh; entries not registered in this
+     *                     session are skipped
+     * @throws JpaException if any source reload, stale removal, or cache eviction fails
+     */
+    public void refreshModels(@NotNull Collection<Class<? extends JpaModel>> targetModels) {
+        if (!this.isActive())
+            throw new JpaException("Session connection is not active");
+
+        if (targetModels.isEmpty())
+            return;
+
+        Set<Class<? extends JpaModel>> targetSet = new HashSet<>(targetModels);
+
+        // Phase 1: Update data sources in topological order, restricted to the target subset.
+        ConcurrentList<Class<? extends JpaModel>> refreshedModels = Concurrent.newList();
+        for (Class<JpaModel> model : this.models) {
+            if (!targetSet.contains(model))
+                continue;
+
+            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
+            if (!(repoIface instanceof JpaRepository<?> repo))
+                continue;
+
+            try {
+                repo.refresh(false);
+                refreshedModels.add(model);
+            } catch (Exception ex) {
+                throw new JpaException(ex, "Failed to refresh data for '%s'", model.getSimpleName());
+            }
+        }
+
+        // Phase 2: Remove stale entities in reverse topological order so children drop before parents.
+        for (Class<? extends JpaModel> model : this.models.reversed()) {
+            if (!targetSet.contains(model))
+                continue;
+
+            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
+            if (!(repoIface instanceof JpaRepository<?> repo))
+                continue;
+
+            try {
+                repo.removeStaleEntities();
+            } catch (Exception ex) {
+                throw new JpaException(ex, "Failed to remove stale entities for '%s'", model.getSimpleName());
+            }
+        }
+
+        // Phase 3: Evict the L2 entity region for every model that actually reloaded data.
+        // Matches the refreshAll() rationale - subsequent streaming hydration repopulates L2
+        // as a side effect, so no eager warm pass is required.
+        for (Class<? extends JpaModel> model : refreshedModels) {
             Repository<? extends JpaModel> repoIface = this.repositories.get(model);
             if (!(repoIface instanceof JpaRepository<?> repo))
                 continue;
