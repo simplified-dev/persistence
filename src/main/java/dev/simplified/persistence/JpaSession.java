@@ -315,7 +315,7 @@ public final class JpaSession {
         if (this.config.getCacheConcurrencyStrategy() != CacheConcurrencyStrategy.NONE)
             properties.put("hibernate.cache.default_cache_concurrency_strategy", this.config.getCacheConcurrencyStrategy().toAccessType().getExternalName());
 
-        return properties.toUnmodifiableMap();
+        return properties.toUnmodifiable();
     }
 
     /** Registers annotated entity classes and configures per-entity cache logging. */

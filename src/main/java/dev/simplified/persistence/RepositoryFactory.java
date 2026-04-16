@@ -1,10 +1,10 @@
 package dev.simplified.persistence;
 
-import dev.simplified.persistence.source.Source;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.sort.Graph;
+import dev.simplified.persistence.source.Source;
 import dev.simplified.reflection.Reflection;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -208,8 +208,8 @@ public interface RepositoryFactory {
             return new Impl(
                 RepositoryFactory.resolveModels(this.packageAnchor),
                 this.defaultSource,
-                this.sources.toUnmodifiableMap(),
-                this.peeks.toUnmodifiableMap()
+                this.sources.toUnmodifiable(),
+                this.peeks.toUnmodifiable()
             );
         }
 
