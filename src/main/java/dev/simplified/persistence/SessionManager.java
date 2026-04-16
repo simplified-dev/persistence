@@ -1,8 +1,8 @@
 package dev.simplified.persistence;
 
-import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -143,7 +143,7 @@ public final class SessionManager {
      * @return an unmodifiable copy of the session list
      */
     public @NotNull ConcurrentList<JpaSession> getSessions() {
-        return this.sessions.toUnmodifiableList();
+        return this.sessions.toUnmodifiable();
     }
 
     /**
