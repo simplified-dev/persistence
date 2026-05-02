@@ -101,7 +101,7 @@ public interface RepositoryFactory {
      */
     @SuppressWarnings("unchecked")
     static @NotNull ConcurrentList<Class<JpaModel>> resolveModels(@NotNull Class<? extends JpaModel> anchor) {
-        return Graph.builder(JpaModel.class)
+        return Graph.<Class<JpaModel>>builder()
             .withValues(
                 Reflection.getResources()
                     .filterPackage(anchor)
