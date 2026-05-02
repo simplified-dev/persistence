@@ -125,7 +125,7 @@ public interface RepositoryFactory {
                 })
             )
             .build()
-            .topologicalSort();
+            .linearTopologicalSort();
     }
 
     /**
