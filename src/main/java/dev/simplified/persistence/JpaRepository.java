@@ -57,38 +57,60 @@ import java.util.stream.Stream;
 @Getter
 public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
-    /** The owning session providing Hibernate access and configuration. */
+    /**
+     * The owning session providing Hibernate access and configuration.
+     */
     private final @NotNull JpaSession session;
 
-    /** The entity class managed by this repository. */
+    /**
+     * The entity class managed by this repository.
+     */
     private final @NotNull Class<T> type;
 
-    /** The source used to load or reload data on each refresh cycle, or {@code empty} for SQL-managed entities. */
+    /**
+     * The source used to load or reload data on each refresh cycle, or {@code empty} for SQL-managed entities.
+     */
     private final @NotNull Optional<Source<T>> source;
 
-    /** Optional consumer applied to each entity via {@link SingleStream#peek} on every query. */
+    /**
+     * Optional consumer applied to each entity via {@link SingleStream#peek} on every query.
+     */
     private final @NotNull Optional<Consumer<T>> streamPeek;
 
-    /** {@code true} if the entity class has any {@link ForeignIds}-annotated fields. */
+    /**
+     * {@code true} if the entity class has any {@link ForeignIds}-annotated fields.
+     */
     @Accessors(fluent = true)
     private final boolean hasForeignIds;
 
-    /** The {@link CacheExpiry} annotation from the entity class, or {@link CacheExpiry#DEFAULT}. */
+    /**
+     * The {@link CacheExpiry} annotation from the entity class, or {@link CacheExpiry#DEFAULT}.
+     */
     private final @NotNull CacheExpiry cacheExpiry;
 
-    /** The refresh interval derived from {@link #cacheExpiry}. */
+    /**
+     * The refresh interval derived from {@link #cacheExpiry}.
+     */
     private final @NotNull Duration cacheDuration;
 
-    /** Accessor for the {@link Id}-annotated field, used by {@link #removeStaleEntities()}. */
+    /**
+     * Accessor for the {@link Id}-annotated field, used by {@link #removeStaleEntities()}.
+     */
     private final @NotNull Optional<FieldAccessor<?>> idAccessor;
 
-    /** Timing snapshot of the initial data load performed during construction. */
+    /**
+     * Timing snapshot of the initial data load performed during construction.
+     */
     private final @NotNull Stopwatch initialLoad;
 
-    /** Timing snapshot of the most recent refresh, updated on every {@link #refresh(boolean)} call. */
+    /**
+     * Timing snapshot of the most recent refresh, updated on every {@link #refresh(boolean)} call.
+     */
     private @NotNull Stopwatch lastRefresh;
 
-    /** Entities loaded by the most recent {@link #persistToDatabase} call, consumed by {@link #removeStaleEntities()}. */
+    /**
+     * Entities loaded by the most recent {@link #persistToDatabase} call, consumed by {@link #removeStaleEntities()}.
+     */
     @Getter(lombok.AccessLevel.NONE)
     private volatile @Nullable ConcurrentList<T> lastLoadedEntities;
 

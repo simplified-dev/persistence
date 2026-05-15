@@ -187,143 +187,193 @@ public final class JpaConfig {
         private GsonSettings gsonSettings = GsonSettings.builder().build();
         private @Nullable RepositoryFactory repositoryFactory;
 
-        /** Enables the Hibernate second-level cache. */
+        /**
+         * Enables the Hibernate second-level cache.
+         */
         public Builder isUsing2ndLevelCache() {
             return this.isUsing2ndLevelCache(true);
         }
 
-        /** Sets whether the Hibernate second-level cache is enabled. */
+        /**
+         * Sets whether the Hibernate second-level cache is enabled.
+         */
         public Builder isUsing2ndLevelCache(boolean value) {
             this.using2ndLevelCache = value;
             return this;
         }
 
-        /** Enables the Hibernate query cache. */
+        /**
+         * Enables the Hibernate query cache.
+         */
         public Builder isUsingQueryCache() {
             return this.isUsingQueryCache(true);
         }
 
-        /** Sets whether the Hibernate query cache is enabled. */
+        /**
+         * Sets whether the Hibernate query cache is enabled.
+         */
         public Builder isUsingQueryCache(boolean value) {
             this.usingQueryCache = value;
             return this;
         }
 
-        /** Enables Hibernate statistics gathering. */
+        /**
+         * Enables Hibernate statistics gathering.
+         */
         public Builder isUsingStatistics() {
             return this.isUsingStatistics(true);
         }
 
-        /** Sets whether Hibernate statistics gathering is enabled. */
+        /**
+         * Sets whether Hibernate statistics gathering is enabled.
+         */
         public Builder isUsingStatistics(boolean value) {
             this.usingStatistics = value;
             return this;
         }
 
-        /** Sets the Hibernate {@link CacheConcurrencyStrategy} for entity caching. */
+        /**
+         * Sets the Hibernate {@link CacheConcurrencyStrategy} for entity caching.
+         */
         public Builder withCacheConcurrencyStrategy(@NotNull CacheConcurrencyStrategy cacheConcurrencyStrategy) {
             this.cacheConcurrencyStrategy = cacheConcurrencyStrategy;
             return this;
         }
 
-        /** Sets the {@link JpaDriver} used for database connectivity. */
+        /**
+         * Sets the {@link JpaDriver} used for database connectivity.
+         */
         public Builder withDriver(@NotNull JpaDriver driver) {
             this.driver = driver;
             return this;
         }
 
-        /** Sets the {@link GsonSettings} used for JSON serialization within the session. */
+        /**
+         * Sets the {@link GsonSettings} used for JSON serialization within the session.
+         */
         public Builder withGsonSettings(@NotNull GsonSettings gsonSettings) {
             this.gsonSettings = gsonSettings;
             return this;
         }
 
-        /** Sets the factory used to create {@link JpaRepository} instances during {@link JpaSession#cacheRepositories()}. */
+        /**
+         * Sets the factory used to create {@link JpaRepository} instances during {@link JpaSession#cacheRepositories()}.
+         */
         public Builder withRepositoryFactory(@NotNull RepositoryFactory repositoryFactory) {
             this.repositoryFactory = repositoryFactory;
             return this;
         }
 
-        /** Sets the database host address. */
+        /**
+         * Sets the database host address.
+         */
         public Builder withHost(@NotNull String host) {
             return this.withHost(Optional.of(host));
         }
 
-        /** Sets the database host address from an {@link Optional}. */
+        /**
+         * Sets the database host address from an {@link Optional}.
+         */
         public Builder withHost(@NotNull Optional<String> host) {
             this.host = host;
             return this;
         }
 
-        /** Sets the log level applied at {@link #build()} time. */
+        /**
+         * Sets the log level applied at {@link #build()} time.
+         */
         public Builder withLogLevel(@NotNull Logging.Level level) {
             this.logLevel = level;
             return this;
         }
 
-        /** Sets the Hibernate {@link CacheMissingStrategy} for absent cache regions. */
+        /**
+         * Sets the Hibernate {@link CacheMissingStrategy} for absent cache regions.
+         */
         public Builder withCacheMissingStrategy(@NotNull CacheMissingStrategy missingCacheStrategy) {
             this.missingCacheStrategy = missingCacheStrategy;
             return this;
         }
 
-        /** Sets the database password. */
+        /**
+         * Sets the database password.
+         */
         public Builder withPassword(@NotNull String password) {
             return this.withPassword(Optional.of(password));
         }
 
-        /** Sets the database password from an {@link Optional}. */
+        /**
+         * Sets the database password from an {@link Optional}.
+         */
         public Builder withPassword(@NotNull Optional<String> password) {
             this.password = password;
             return this;
         }
 
-        /** Sets the database port number. */
+        /**
+         * Sets the database port number.
+         */
         public Builder withPort(int port) {
             return this.withPort(Optional.of(port));
         }
 
-        /** Sets the database port number from an {@link Optional}. */
+        /**
+         * Sets the database port number from an {@link Optional}.
+         */
         public Builder withPort(@NotNull Optional<Integer> port) {
             this.port = port;
             return this;
         }
 
-        /** Sets the query results cache time-to-live in seconds. */
+        /**
+         * Sets the query results cache time-to-live in seconds.
+         */
         public Builder withQueryResultsTTL(long queryResultsTTL) {
             this.queryResultsTTL = queryResultsTTL;
             return this;
         }
 
-        /** Sets the default JCache TTL in milliseconds for entity types without a {@link CacheExpiry} annotation. */
+        /**
+         * Sets the default JCache TTL in milliseconds for entity types without a {@link CacheExpiry} annotation.
+         */
         public Builder withDefaultCacheExpiryMs(long defaultCacheExpiryMs) {
             this.defaultCacheExpiryMs = defaultCacheExpiryMs;
             return this;
         }
 
-        /** Sets the {@link JpaCacheProvider} backing the JCache (JSR-107) second-level cache. */
+        /**
+         * Sets the {@link JpaCacheProvider} backing the JCache (JSR-107) second-level cache.
+         */
         public Builder withCacheProvider(@NotNull JpaCacheProvider cacheProvider) {
             this.cacheProvider = cacheProvider;
             return this;
         }
 
-        /** Sets the database schema name. */
+        /**
+         * Sets the database schema name.
+         */
         public Builder withSchema(@NotNull String schema) {
             return this.withSchema(Optional.of(schema));
         }
 
-        /** Sets the database schema name from an {@link Optional}. */
+        /**
+         * Sets the database schema name from an {@link Optional}.
+         */
         public Builder withSchema(@NotNull Optional<String> schema) {
             this.schema = schema;
             return this;
         }
 
-        /** Sets the database username. */
+        /**
+         * Sets the database username.
+         */
         public Builder withUser(@NotNull String user) {
             return this.withUser(Optional.of(user));
         }
 
-        /** Sets the database username from an {@link Optional}. */
+        /**
+         * Sets the database username from an {@link Optional}.
+         */
         public Builder withUser(@NotNull Optional<String> user) {
             this.user = user;
             return this;

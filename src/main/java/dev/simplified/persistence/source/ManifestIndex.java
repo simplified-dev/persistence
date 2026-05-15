@@ -29,21 +29,31 @@ import org.jetbrains.annotations.Nullable;
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
 public final class ManifestIndex {
 
-    /** The schema version, currently {@code 1} for {@code data/v1/}. */
+    /**
+     * The schema version, currently {@code 1} for {@code data/v1/}.
+     */
     private final int version;
 
-    /** ISO-8601 timestamp captured by the generator at emit time. */
+    /**
+     * ISO-8601 timestamp captured by the generator at emit time.
+     */
     @SerializedName("generated_at")
     private final @NotNull String generatedAt;
 
-    /** The {@code skyblock-data} commit sha at generation time, or {@code null} for local builds. */
+    /**
+     * The {@code skyblock-data} commit sha at generation time, or {@code null} for local builds.
+     */
     @SerializedName("commit_sha")
     private final @Nullable String commitSha;
 
-    /** The distinct entity count (primaries only - {@code _extra} companions are folded into their primary's entry). */
+    /**
+     * The distinct entity count (primaries only - {@code _extra} companions are folded into their primary's entry).
+     */
     private final int count;
 
-    /** The per-entity file entries, one per primary JSON file. */
+    /**
+     * The per-entity file entries, one per primary JSON file.
+     */
     private final @NotNull ConcurrentList<Entry> files;
 
     /**
@@ -56,40 +66,60 @@ public final class ManifestIndex {
     @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
     public static final class Entry {
 
-        /** The primary file path relative to the {@code skyblock-data} repo root. */
+        /**
+         * The primary file path relative to the {@code skyblock-data} repo root.
+         */
         private final @NotNull String path;
 
-        /** The category subdirectory the file lives in (e.g. {@code items}, {@code mobs}). */
+        /**
+         * The category subdirectory the file lives in (e.g. {@code items}, {@code mobs}).
+         */
         private final @NotNull String category;
 
-        /** The {@code @Table(name = "...")} annotation value on the target entity. */
+        /**
+         * The {@code @Table(name = "...")} annotation value on the target entity.
+         */
         @SerializedName("table_name")
         private final @NotNull String tableName;
 
-        /** The fully-qualified Java class name of the target {@code JpaModel}. */
+        /**
+         * The fully-qualified Java class name of the target {@code JpaModel}.
+         */
         @SerializedName("model_class")
         private final @NotNull String modelClass;
 
-        /** The lowercase hex SHA-256 digest of the primary file's bytes. */
+        /**
+         * The lowercase hex SHA-256 digest of the primary file's bytes.
+         */
         @SerializedName("content_sha256")
         private final @NotNull String contentSha256;
 
-        /** The primary file's byte length. */
+        /**
+         * The primary file's byte length.
+         */
         private final long bytes;
 
-        /** {@code true} when an {@code _extra} companion file is present. */
+        /**
+         * {@code true} when an {@code _extra} companion file is present.
+         */
         @SerializedName("has_extra")
         private final boolean hasExtra;
 
-        /** The companion file path, or {@code null} when {@link #hasExtra} is {@code false}. */
+        /**
+         * The companion file path, or {@code null} when {@link #hasExtra} is {@code false}.
+         */
         @SerializedName("extra_path")
         private final @Nullable String extraPath;
 
-        /** The companion file's SHA-256, or {@code null} when {@link #hasExtra} is {@code false}. */
+        /**
+         * The companion file's SHA-256, or {@code null} when {@link #hasExtra} is {@code false}.
+         */
         @SerializedName("extra_sha256")
         private final @Nullable String extraSha256;
 
-        /** The companion file's byte length, or {@code null} when {@link #hasExtra} is {@code false}. */
+        /**
+         * The companion file's byte length, or {@code null} when {@link #hasExtra} is {@code false}.
+         */
         @SerializedName("extra_bytes")
         private final @Nullable Long extraBytes;
 

@@ -227,16 +227,24 @@ public interface RepositoryFactory {
     @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
     class Impl implements RepositoryFactory {
 
-        /** Topologically sorted entity classes discovered from the configured package anchor. */
+        /**
+         * Topologically sorted entity classes discovered from the configured package anchor.
+         */
         private final @NotNull ConcurrentList<Class<JpaModel>> models;
 
-        /** The fallback source for types without an explicit registration. */
+        /**
+         * The fallback source for types without an explicit registration.
+         */
         private final @Nullable Source<?> defaultSource;
 
-        /** Per-type source registrations. */
+        /**
+         * Per-type source registrations.
+         */
         private final @NotNull ConcurrentMap<Class<?>, Source<?>> sources;
 
-        /** Per-type stream peek consumers. */
+        /**
+         * Per-type stream peek consumers.
+         */
         private final @NotNull ConcurrentMap<Class<?>, Consumer<?>> peeks;
 
     }

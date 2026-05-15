@@ -27,19 +27,29 @@ import javax.cache.Caching;
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
 public enum JpaCacheProvider {
 
-    /** EhCache 3 JSR-107 provider - the default and the only provider on the classpath today. */
+    /**
+     * EhCache 3 JSR-107 provider - the default and the only provider on the classpath today.
+     */
     EHCACHE("org.ehcache.jsr107.EhcacheCachingProvider", null),
 
-    /** Hazelcast client-mode provider - connects to a remote cluster, auto-discovers {@code hazelcast-client.xml} from the classpath. */
+    /**
+     * Hazelcast client-mode provider - connects to a remote cluster, auto-discovers {@code hazelcast-client.xml} from the classpath.
+     */
     HAZELCAST_CLIENT("com.hazelcast.client.cache.impl.HazelcastClientCachingProvider", null),
 
-    /** Hazelcast embedded-mode provider - bootstraps an in-process member, auto-discovers {@code hazelcast.xml} from the classpath. */
+    /**
+     * Hazelcast embedded-mode provider - bootstraps an in-process member, auto-discovers {@code hazelcast.xml} from the classpath.
+     */
     HAZELCAST_EMBEDDED("com.hazelcast.cache.impl.HazelcastServerCachingProvider", null);
 
-    /** Fully-qualified JSR-107 {@code CachingProvider} class name passed to {@link javax.cache.Caching#getCachingProvider(String)}. */
+    /**
+     * Fully-qualified JSR-107 {@code CachingProvider} class name passed to {@link Caching#getCachingProvider(String)}.
+     */
     private final @NotNull String providerClassName;
 
-    /** Classpath resource URI for the provider's XML config, or {@code null} to use the provider's default. */
+    /**
+     * Classpath resource URI for the provider's XML config, or {@code null} to use the provider's default.
+     */
     private final @Nullable String configUri;
 
 }

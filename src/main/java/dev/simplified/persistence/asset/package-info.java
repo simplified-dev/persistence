@@ -1,6 +1,6 @@
 /**
  * JPA entities that persist change-detection state for external asset sources such as
- * {@link dev.simplified.persistence.source.RemoteJsonSource}.
+ * {@link RemoteJsonSource}.
  *
  * <p>Phase 4a ships the schema only. Phase 4c wires these entities into a scheduled
  * poller that computes manifest deltas and drives incremental refresh of downstream
@@ -17,3 +17,5 @@
  * @see dev.simplified.persistence.source.RemoteJsonSource
  */
 package dev.simplified.persistence.asset;
+
+import dev.simplified.persistence.source.RemoteJsonSource;

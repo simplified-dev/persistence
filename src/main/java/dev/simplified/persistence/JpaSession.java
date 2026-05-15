@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.collection.tuple.single.LifecycleSingleStream;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.type.TypeRegistrar;
@@ -42,11 +44,6 @@ import org.hibernate.tool.schema.spi.TargetDescriptor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import javax.cache.CacheManager;
-import javax.cache.Caching;
-import javax.cache.configuration.MutableConfiguration;
-import javax.cache.expiry.Duration;
-import javax.cache.expiry.ModifiedExpiryPolicy;
 import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
@@ -64,6 +61,11 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import javax.cache.CacheManager;
+import javax.cache.Caching;
+import javax.cache.configuration.MutableConfiguration;
+import javax.cache.expiry.Duration;
+import javax.cache.expiry.ModifiedExpiryPolicy;
 
 /**
  * A fully self-initializing JPA session backed by a Hibernate {@link SessionFactory}
@@ -102,43 +104,69 @@ public final class JpaSession {
      */
     private static final int CACHE_TTL_MULTIPLIER = 2;
 
-    /** Cached repositories keyed by their entity class. */
+    /**
+     * Cached repositories keyed by their entity class.
+     */
     private final @NotNull ConcurrentMap<Class<? extends JpaModel>, Repository<? extends JpaModel>> repositories = Concurrent.newMap();
 
-    /** Topologically sorted entity classes discovered from the {@link RepositoryFactory}. */
+    /**
+     * Topologically sorted entity classes discovered from the {@link RepositoryFactory}.
+     */
     private final @NotNull ConcurrentList<Class<JpaModel>> models;
 
-    /** The immutable configuration that produced this session. */
+    /**
+     * The immutable configuration that produced this session.
+     */
     private final @NotNull JpaConfig config;
 
-    /** Internal scheduler for repository refresh tasks, shut down on {@link #shutdown()}. */
+    /**
+     * Internal scheduler for repository refresh tasks, shut down on {@link #shutdown()}.
+     */
     private final @NotNull Scheduler scheduler;
 
-    /** Gson instance configured with this session's {@link dev.simplified.gson.GsonSettings}. */
+    /**
+     * Gson instance configured with this session's {@link GsonSettings}.
+     */
     private final @NotNull Gson gson;
 
-    /** Assembled Hibernate and HikariCP connection properties. */
+    /**
+     * Assembled Hibernate and HikariCP connection properties.
+     */
     private final @NotNull ConcurrentMap<String, Object> properties;
 
-    /** Hibernate entity metadata including custom type registrations and column adjustments. */
+    /**
+     * Hibernate entity metadata including custom type registrations and column adjustments.
+     */
     private final @NotNull Metadata metadata;
 
-    /** The Hibernate session factory opened from {@link #metadata}. */
+    /**
+     * The Hibernate session factory opened from {@link #metadata}.
+     */
     private final @NotNull SessionFactory sessionFactory;
 
-    /** The Hibernate service registry backing {@link #sessionFactory}. */
+    /**
+     * The Hibernate service registry backing {@link #sessionFactory}.
+     */
     private final @NotNull StandardServiceRegistry serviceRegistry;
 
-    /** Timing snapshot of the full constructor bootstrap. */
+    /**
+     * Timing snapshot of the full constructor bootstrap.
+     */
     private final @NotNull Stopwatch initialization;
 
-    /** {@code true} while this session has not been shut down. */
+    /**
+     * {@code true} while this session has not been shut down.
+     */
     private boolean active = true;
 
-    /** Guard flag preventing {@link #cacheRepositories()} from running more than once. */
+    /**
+     * Guard flag preventing {@link #cacheRepositories()} from running more than once.
+     */
     private boolean repositoriesCached = false;
 
-    /** Timing snapshot of the {@link #cacheRepositories()} pass, or {@code null} if not yet run. */
+    /**
+     * Timing snapshot of the {@link #cacheRepositories()} pass, or {@code null} if not yet run.
+     */
     private Stopwatch repositoryCache;
 
     /**
@@ -201,7 +229,9 @@ public final class JpaSession {
         return type;
     }
 
-    /** Creates a JCache configuration with the given name and TTL, reusing existing caches. */
+    /**
+     * Creates a JCache configuration with the given name and TTL, reusing existing caches.
+     */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
         CacheManager cacheManager = this.resolveCacheManager();
 
@@ -244,7 +274,9 @@ public final class JpaSession {
         }
     }
 
-    /** Assembles Hibernate and HikariCP properties from the {@link JpaConfig}. */
+    /**
+     * Assembles Hibernate and HikariCP properties from the {@link JpaConfig}.
+     */
     private @NotNull ConcurrentMap<String, Object> createProperties() {
         ConcurrentMap<String, Object> properties = Concurrent.newMap();
 
@@ -318,7 +350,9 @@ public final class JpaSession {
         return properties.toUnmodifiable();
     }
 
-    /** Registers annotated entity classes and configures per-entity cache logging. */
+    /**
+     * Registers annotated entity classes and configures per-entity cache logging.
+     */
     private @NotNull MetadataSources createMetadataSources(@NotNull StandardServiceRegistry serviceRegistry) {
         MetadataSources metadataSources = new MetadataSources(serviceRegistry);
 
@@ -766,7 +800,7 @@ public final class JpaSession {
     /**
      * Opens a Hibernate {@link Session} that is NOT auto-closed by this class. Caller assumes
      * full ownership of the session lifecycle and MUST close it - typically by handing it to
-     * a {@link dev.simplified.collection.tuple.single.LifecycleSingleStream} which auto-closes
+     * a {@link LifecycleSingleStream} which auto-closes
      * inside its terminal operations.
      *
      * <p>Use this when the result of a session-bound call (e.g. a lazy {@code getResultStream()})

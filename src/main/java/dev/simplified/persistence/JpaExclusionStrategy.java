@@ -17,7 +17,9 @@ import org.jspecify.annotations.NonNull;
  */
 public final class JpaExclusionStrategy implements ExclusionStrategy {
 
-    /** Shared singleton instance. */
+    /**
+     * Shared singleton instance.
+     */
     public static final @NotNull JpaExclusionStrategy INSTANCE = new JpaExclusionStrategy();
 
     private JpaExclusionStrategy() {}

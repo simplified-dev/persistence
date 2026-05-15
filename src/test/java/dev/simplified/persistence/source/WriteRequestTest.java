@@ -12,23 +12,24 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThanOrEqualTo;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import org.hamcrest.MatcherAssert.assertThat;
+import org.hamcrest.Matchers.containsString;
+import org.hamcrest.Matchers.equalTo;
+import org.hamcrest.Matchers.greaterThanOrEqualTo;
+import org.hamcrest.Matchers.is;
+import org.hamcrest.Matchers.lessThanOrEqualTo;
+import org.hamcrest.Matchers.not;
+import org.hamcrest.Matchers.notNullValue;
+import org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Unit tests for {@link WriteRequest} covering the static factories, field
- * population, JDK {@link java.io.Serializable} round-trip (which exercises the
+ * population, JDK {@link Serializable} round-trip (which exercises the
  * exact serializer path Hazelcast will use on the {@code skyblock.writes} queue),
  * and the {@link WriteRequest#resolveEntityType()} /
  * {@link WriteRequest#deserializeEntity(Gson, Class)} helpers used by the Phase 6b

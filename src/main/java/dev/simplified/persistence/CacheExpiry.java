@@ -41,10 +41,14 @@ public @interface CacheExpiry {
 
     };
 
-    /** The time unit for the expiry interval. */
+    /**
+     * The time unit for the expiry interval.
+     */
     @NotNull TimeUnit length();
 
-    /** The numeric value of the expiry interval, in units of {@link #length()}. */
+    /**
+     * The numeric value of the expiry interval, in units of {@link #length()}.
+     */
     int value();
 
 }

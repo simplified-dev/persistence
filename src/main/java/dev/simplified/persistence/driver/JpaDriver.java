@@ -29,13 +29,19 @@ public interface JpaDriver {
      */
     @NotNull String getConnectionUrl(@NotNull String host, int port, @NotNull String schema);
 
-    /** The default port number for this database type. */
+    /**
+     * The default port number for this database type.
+     */
     int getDefaultPort();
 
-    /** The fully-qualified name of the Hibernate dialect class for this database type. */
+    /**
+     * The fully-qualified name of the Hibernate dialect class for this database type.
+     */
     @NotNull String getDialectClass();
 
-    /** The fully-qualified class path of the JDBC driver implementation for this database. */
+    /**
+     * The fully-qualified class path of the JDBC driver implementation for this database.
+     */
     @NotNull String getClassPath();
 
     /**
@@ -43,7 +49,7 @@ public interface JpaDriver {
      * <p>
      * If the class cannot be found, it indicates that the driver is unavailable.
      *
-     * @return {@code true} if the driver class can be successfully loaded and is available, {@code false} otherwise.
+     * @return {@code true} if the driver class can be successfully loaded and is available, {@code false} otherwise
      */
     default boolean isAvailable() {
         try {

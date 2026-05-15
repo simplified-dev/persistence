@@ -17,6 +17,7 @@ import org.hibernate.type.descriptor.converter.spi.BasicValueConverter;
 import org.hibernate.type.descriptor.java.JavaType;
 import org.hibernate.type.descriptor.java.MutabilityPlan;
 import org.hibernate.type.descriptor.jdbc.JdbcType;
+import org.hibernate.usertype.UserType;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.ParameterizedType;
@@ -48,7 +49,9 @@ import java.util.function.BiConsumer;
  */
 public interface TypeRegistrar {
 
-    /** Cached accessor for the {@code BasicValue.resolution} field used by {@link #resolveAndUpdate}. */
+    /**
+     * Cached accessor for the {@code BasicValue.resolution} field used by {@link #resolveAndUpdate}.
+     */
     FieldAccessor<BasicValue.Resolution<?>> RESOLUTION_ACCESSOR = new Reflection<>(BasicValue.class).getField("resolution");
 
     /**
@@ -74,7 +77,7 @@ public interface TypeRegistrar {
      * per-field instances (e.g. {@code List<String>} vs {@code List<Level>}), this method
      * replaces the default binding with the correct element-typed instance by injecting a
      * new {@link BasicValue.Resolution} backed by the per-element-type
-     * {@link org.hibernate.usertype.UserType UserType}.
+     * {@link UserType UserType}.
      *
      * @param metadata the built metadata whose property bindings may be upgraded
      */
@@ -130,7 +133,7 @@ public interface TypeRegistrar {
      * Unlike the {@linkplain #bindTypes(Metadata, Map, Class) parameterized overload},
      * this does not inspect generic type arguments - it applies one key to every
      * matching field. Intended for types like {@link Map} where a single
-     * {@link org.hibernate.usertype.UserType UserType} instance handles all
+     * {@link UserType UserType} instance handles all
      * parameterized variants.
      *
      * @param metadata the built Hibernate metadata containing entity bindings

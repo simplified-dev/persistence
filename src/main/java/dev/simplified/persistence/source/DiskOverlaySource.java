@@ -12,6 +12,7 @@ import org.jetbrains.annotations.NotNull;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.WatchService;
 
 /**
  * A {@link Source} wrapper that prefers a local filesystem overlay and falls back to an
@@ -30,7 +31,7 @@ import java.nio.file.Path;
  * </ol>
  *
  * <p><b>Do not add a content-hash cache, a modification-time cache, or a
- * {@link java.nio.file.WatchService} listener inside this class.</b> The locked
+ * {@link WatchService} listener inside this class.</b> The locked
  * architecture decision (see Phase 4 memory entry) is to let Phase 4c's scheduled
  * content-hash poller drive refresh cadence - not a per-file listener. The
  * {@code java.nio.file.WatchService} API has several documented Windows bugs

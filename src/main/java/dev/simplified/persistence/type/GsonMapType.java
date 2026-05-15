@@ -2,13 +2,14 @@ package dev.simplified.persistence.type;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import dev.simplified.persistence.JpaModel;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.persistence.JpaModel;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import org.hibernate.boot.Metadata;
 import org.hibernate.boot.MetadataBuilder;
+import org.hibernate.mapping.BasicValue.Resolution;
 import org.hibernate.type.descriptor.WrapperOptions;
 import org.hibernate.usertype.UserType;
 import org.jetbrains.annotations.NotNull;
@@ -40,7 +41,7 @@ import java.util.Set;
  *         resolution always finds a valid binding.</li>
  *     <li>After metadata build, {@link Registrar#postProcess} upgrades each property's
  *         binding to the correct typed instance via
- *         {@link org.hibernate.mapping.BasicValue.Resolution#updateResolution}.</li>
+ *         {@link Resolution#updateResolution}.</li>
  * </ol>
  */
 @SuppressWarnings("unchecked")

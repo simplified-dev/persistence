@@ -2,6 +2,7 @@ package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
 import lombok.AccessLevel;
@@ -9,6 +10,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.ObjectOutputStream;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.Instant;
@@ -30,14 +32,14 @@ import java.util.UUID;
  * Hazelcast's {@code AbstractSerializationService} falls back to the built-in
  * {@code JavaDefaultSerializers$JavaSerializer} for any type that implements only
  * {@code Serializable}, which walks the object graph via a standard
- * {@link java.io.ObjectOutputStream}. Every field on this class is a primitive,
+ * {@link ObjectOutputStream}. Every field on this class is a primitive,
  * enum, or JDK value type ({@link String}, {@link UUID}, {@link Instant}) that
  * serializes cleanly through the default path, so no custom serializer is needed.
  *
  * <p>The {@link #entityJson} payload is pre-serialized by the producer via the
  * producer's local {@link Gson} instance. This keeps the library free of Gson
  * configuration coupling and lets each service ship its own
- * {@link dev.simplified.gson.GsonSettings} without cross-service drift. The
+ * {@link GsonSettings} without cross-service drift. The
  * consumer rehydrates the entity via {@link #deserializeEntity(Gson, Class)} using
  * its own Gson, which is assumed to produce a byte-compatible deserialization for
  * the shared model class (the {@code minecraft-api} dep guarantees both sides see
@@ -73,7 +75,9 @@ public final class WriteRequest implements Serializable {
      */
     private final @NotNull Instant timestamp;
 
-    /** Whether this request represents an upsert or a delete. */
+    /**
+     * Whether this request represents an upsert or a delete.
+     */
     private final @NotNull Operation operation;
 
     /**

@@ -22,19 +22,29 @@ import java.time.Duration;
  */
 public interface Repository<T extends JpaModel> extends Sortable<T> {
 
-    /** The cache refresh duration derived from the {@link CacheExpiry} annotation. */
+    /**
+     * The cache refresh duration derived from the {@link CacheExpiry} annotation.
+     */
     @NotNull Duration getCacheDuration();
 
-    /** The {@link CacheExpiry} annotation for this repository's entity type, or {@link CacheExpiry#DEFAULT} if not annotated. */
+    /**
+     * The {@link CacheExpiry} annotation for this repository's entity type, or {@link CacheExpiry#DEFAULT} if not annotated.
+     */
     @NotNull CacheExpiry getCacheExpiry();
 
-    /** The timing snapshot of the initial data load performed during repository construction. */
+    /**
+     * The timing snapshot of the initial data load performed during repository construction.
+     */
     @NotNull Stopwatch getInitialLoad();
 
-    /** The timing snapshot of the most recent cache refresh. */
+    /**
+     * The timing snapshot of the most recent cache refresh.
+     */
     @NotNull Stopwatch getLastRefresh();
 
-    /** The class type of the {@link JpaModel} associated with this repository. */
+    /**
+     * The class type of the {@link JpaModel} associated with this repository.
+     */
     @NotNull Class<T> getType();
 
     /**
