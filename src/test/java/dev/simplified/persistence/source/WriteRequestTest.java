@@ -16,16 +16,16 @@ import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
 
-import org.hamcrest.MatcherAssert.assertThat;
-import org.hamcrest.Matchers.containsString;
-import org.hamcrest.Matchers.equalTo;
-import org.hamcrest.Matchers.greaterThanOrEqualTo;
-import org.hamcrest.Matchers.is;
-import org.hamcrest.Matchers.lessThanOrEqualTo;
-import org.hamcrest.Matchers.not;
-import org.hamcrest.Matchers.notNullValue;
-import org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import org.junit.jupiter.api.Assertions.assertThrows;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Unit tests for {@link WriteRequest} covering the static factories, field
