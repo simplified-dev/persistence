@@ -184,7 +184,7 @@ public final class JpaConfig {
         private long defaultCacheExpiryMs = 30_000;
         @BuildFlag(nonNull = true)
         private JpaCacheProvider cacheProvider = JpaCacheProvider.EHCACHE;
-        private GsonSettings gsonSettings = GsonSettings.builder().build();
+        private GsonSettings gsonSettings = GsonSettings.defaults();
         private @Nullable RepositoryFactory repositoryFactory;
 
         /**
