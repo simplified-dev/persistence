@@ -6,12 +6,16 @@ import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.sort.Graph;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.reflection.Reflection;
+import jakarta.persistence.ManyToMany;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Arrays;
@@ -95,9 +99,12 @@ public interface RepositoryFactory {
      * <p>Dependencies are inferred from declared fields: direct {@link JpaModel} field types
      * and {@link JpaModel} type arguments of parameterized fields (e.g.
      * {@code ConcurrentList<SomeModel>}) are treated as edges in the dependency graph.
+     * {@linkplain #isInverseSide(Field) Inverse sides} of bidirectional associations are excluded,
+     * because the entity that owns the foreign key is the one that constrains ordering.
      *
      * @param anchor the class whose package scopes the scan
      * @return a topologically sorted list of discovered entity classes
+     * @throws IllegalStateException if the entities depend on each other cyclically
      */
     @SuppressWarnings("unchecked")
     static @NotNull ConcurrentList<Class<JpaModel>> resolveModels(@NotNull Class<? extends JpaModel> anchor) {
@@ -108,6 +115,7 @@ public interface RepositoryFactory {
                     .getTypesOf(JpaModel.class)
             )
             .withEdgeFunction(type -> Arrays.stream(type.getDeclaredFields())
+                .filter(field -> !isInverseSide(field))
                 .flatMap(field -> {
                     Type genericType = field.getGenericType();
 
@@ -126,6 +134,36 @@ public interface RepositoryFactory {
             )
             .build()
             .linearTopologicalSort();
+    }
+
+    /**
+     * Returns whether a field is the inverse side of a bidirectional association.
+     *
+     * <p>An inverse side names the field that owns the association through {@code mappedBy}, so the
+     * foreign key belongs to the other entity and so does the only ordering constraint. Reading it as
+     * a dependency asserts the reverse of the truth - the owning side already contributes the correct
+     * edge - and the two together read as a cycle.
+     *
+     * <p>A relationship without {@code mappedBy} is an owning side and is left alone, including a
+     * unidirectional {@code @OneToMany}.
+     *
+     * @param field the declared field to test
+     * @return {@code true} when another entity owns the association
+     */
+    private static boolean isInverseSide(@NotNull Field field) {
+        OneToMany oneToMany = field.getAnnotation(OneToMany.class);
+
+        if (oneToMany != null)
+            return !oneToMany.mappedBy().isEmpty();
+
+        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
+
+        if (oneToOne != null)
+            return !oneToOne.mappedBy().isEmpty();
+
+        ManyToMany manyToMany = field.getAnnotation(ManyToMany.class);
+
+        return manyToMany != null && !manyToMany.mappedBy().isEmpty();
     }
 
     /**
