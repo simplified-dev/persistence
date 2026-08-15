@@ -2,11 +2,11 @@ package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import dev.simplified.annotations.Getter;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaRepository;
 import dev.simplified.persistence.exception.JpaException;
-import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Type;

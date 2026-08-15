@@ -1,15 +1,15 @@
 package dev.simplified.persistence.source;
 
 import com.google.gson.reflect.TypeToken;
+import dev.simplified.annotations.Cleanup;
+import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaRepository;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.collection.Concurrent;
-import dev.simplified.collection.ConcurrentList;
 import dev.simplified.util.StringUtil;
 import dev.simplified.util.SystemUtil;
 import jakarta.persistence.Table;
-import lombok.Cleanup;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 

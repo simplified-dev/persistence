@@ -1,10 +1,10 @@
 package dev.simplified.persistence.type;
 
 import com.google.gson.Gson;
+import dev.simplified.annotations.RequiredArgsConstructor;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
-import lombok.RequiredArgsConstructor;
 import org.hibernate.boot.MetadataBuilder;
 import org.hibernate.type.descriptor.WrapperOptions;
 import org.hibernate.usertype.UserType;

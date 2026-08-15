@@ -1,16 +1,16 @@
 package dev.simplified.persistence;
 
+import dev.simplified.annotations.AccessLevel;
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.RequiredArgsConstructor;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.driver.MariaDbDriver;
 import dev.simplified.persistence.source.Source;
-import dev.simplified.util.Logging;
-import dev.simplified.gson.GsonSettings;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.builder.BuildFlag;
+import dev.simplified.util.Logging;
 import dev.simplified.util.SystemUtil;
-import lombok.AccessLevel;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import org.ehcache.core.Ehcache;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.jetbrains.annotations.NotNull;

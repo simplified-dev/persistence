@@ -1,21 +1,20 @@
 package dev.simplified.persistence.asset;
 
+import dev.simplified.annotations.AllArgsConstructor;
+import dev.simplified.annotations.EqualsAndHashCode;
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
+import dev.simplified.annotations.Setter;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.Serializable;
 import java.time.Instant;
-import java.util.Objects;
 
 /**
  * Per-entry change-detection state recording the last observed content hash for an
@@ -39,6 +38,7 @@ import java.util.Objects;
 @Getter
 @Setter
 @NoArgsConstructor
+@EqualsAndHashCode(of = { "sourceId", "entryPath" })
 public class ExternalAssetEntryState implements JpaModel {
 
     @Id
@@ -55,21 +55,6 @@ public class ExternalAssetEntryState implements JpaModel {
     @Column(name = "last_seen_at", nullable = false)
     private @NotNull Instant lastSeenAt = Instant.EPOCH;
 
-    @Override
-    public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) return false;
-
-        ExternalAssetEntryState that = (ExternalAssetEntryState) o;
-
-        return Objects.equals(this.sourceId, that.sourceId)
-            && Objects.equals(this.entryPath, that.entryPath);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(this.sourceId, this.entryPath);
-    }
-
     /**
      * Composite primary key for {@link ExternalAssetEntryState}. Required by the JPA
      * {@link IdClass} contract and must be a public, no-arg-constructible, {@link Serializable}
@@ -79,7 +64,7 @@ public class ExternalAssetEntryState implements JpaModel {
     @Setter
     @NoArgsConstructor
     @AllArgsConstructor
-    @EqualsAndHashCode
+    @EqualsAndHashCode(identity = EqualsAndHashCode.Identity.INSTANCE_OF_CANEQUAL)
     public static class PK implements Serializable {
 
         private @NotNull String sourceId = "";

@@ -1,23 +1,24 @@
 package dev.simplified.persistence;
 
-import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.source.Source;
+import dev.simplified.annotations.AccessLevel;
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NamingStyle;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
-import dev.simplified.gson.PostInit;
-import dev.simplified.reflection.Reflection;
-import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.collection.tuple.single.SingleStream;
+import dev.simplified.gson.PostInit;
+import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.source.Source;
+import dev.simplified.reflection.Reflection;
+import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
 import jakarta.persistence.Id;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
-import lombok.Getter;
-import lombok.experimental.Accessors;
 import org.hibernate.NonUniqueObjectException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -80,7 +81,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * {@code true} if the entity class has any {@link ForeignIds}-annotated fields.
      */
-    @Accessors(fluent = true)
+    @Getter(style = NamingStyle.FLUENT)
     private final boolean hasForeignIds;
 
     /**
@@ -111,7 +112,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * Entities loaded by the most recent {@link #persistToDatabase} call, consumed by {@link #removeStaleEntities()}.
      */
-    @Getter(lombok.AccessLevel.NONE)
+    @Getter(AccessLevel.NONE)
     private volatile @Nullable ConcurrentList<T> lastLoadedEntities;
 
     /**
