@@ -1,5 +1,7 @@
 package dev.simplified.persistence.graph;
 
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.Setter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.JpaModel;
@@ -8,8 +10,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
-import lombok.Getter;
-import lombok.Setter;
 
 /**
  * The referenced half of a bidirectional association, carrying only the inverse side.

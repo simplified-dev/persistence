@@ -205,8 +205,7 @@ persistence/
 ├── build.gradle.kts
 ├── gradle/
 │   └── libs.versions.toml
-├── LICENSE.md
-└── lombok.config
+└── LICENSE.md
 ```
 
 ## Dependencies
@@ -222,7 +221,7 @@ persistence/
 | [EhCache](https://www.ehcache.org/) | 3.10.8 | Implementation |
 | [Log4j2](https://logging.apache.org/log4j/) | 2.25.3 | API (log level configuration and `@Log4j2` logging) |
 | [JetBrains Annotations](https://github.com/JetBrains/java-annotations) | 26.0.2 | API |
-| [Lombok](https://projectlombok.org/) | 1.18.36 | Compile-only |
+| [Simplified Annotations](https://github.com/Simplified-Dev/annotations) | 2.5.1 | Compile-only |
 | [JUnit 5](https://junit.org/junit5/) | 5.11.4 | Test |
 | [Hamcrest](http://hamcrest.org/) | 2.2 | Test |
 | [collections](https://github.com/Simplified-Dev/collections) | master-SNAPSHOT | API (Simplified-Dev) |

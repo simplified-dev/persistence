@@ -1,19 +1,19 @@
 package dev.simplified.persistence.asset;
 
+import dev.simplified.annotations.AccessLevel;
+import dev.simplified.annotations.EqualsAndHashCode;
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
+import dev.simplified.annotations.Setter;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import lombok.AccessLevel;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Instant;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -37,6 +37,7 @@ import java.util.Optional;
 @Getter
 @Setter
 @NoArgsConstructor
+@EqualsAndHashCode(of = "sourceId")
 public class ExternalAssetState implements JpaModel {
 
     @Id
@@ -96,20 +97,6 @@ public class ExternalAssetState implements JpaModel {
      */
     public @NotNull Optional<Instant> getLastSuccessAt() {
         return Optional.ofNullable(this.lastSuccessAt);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) return false;
-
-        ExternalAssetState that = (ExternalAssetState) o;
-
-        return Objects.equals(this.sourceId, that.sourceId);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(this.sourceId);
     }
 
 }

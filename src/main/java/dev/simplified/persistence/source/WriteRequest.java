@@ -2,12 +2,12 @@ package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
+import dev.simplified.annotations.AccessLevel;
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.RequiredArgsConstructor;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
-import lombok.AccessLevel;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.ObjectOutputStream;
@@ -46,7 +46,7 @@ import java.util.UUID;
  * the same {@link JpaModel} classes and Gson type adapters).
  *
  * <p>Instances are constructed exclusively via the static factories; the
- * constructor is {@code private} under Lombok's {@code @RequiredArgsConstructor},
+ * constructor is {@code private} under {@link RequiredArgsConstructor},
  * matching the rest of the package's convention (see {@link ManifestIndex}). All
  * fields are final and non-null.
  *

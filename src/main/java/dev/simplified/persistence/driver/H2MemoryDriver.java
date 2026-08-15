@@ -1,6 +1,6 @@
 package dev.simplified.persistence.driver;
 
-import lombok.Getter;
+import dev.simplified.annotations.Getter;
 import org.jetbrains.annotations.NotNull;
 
 /**

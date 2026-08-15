@@ -18,11 +18,11 @@ repositories {
 
 dependencies {
     // Simplified Libraries
-    api("com.github.simplified-dev:collections") { version { strictly("7699a31") } }
-    api("com.github.simplified-dev:utils") { version { strictly("036cc09") } }
-    api("com.github.simplified-dev:reflection") { version { strictly("33b2f05") } }
-    api("com.github.simplified-dev:gson-extras") { version { strictly("6421324") } }
-    api("com.github.simplified-dev:scheduler") { version { strictly("754319e") } }
+    api("com.github.simplified-dev:collections") { version { strictly("23f01b6") } }
+    api("com.github.simplified-dev:utils") { version { strictly("381e317") } }
+    api("com.github.simplified-dev:reflection") { version { strictly("d02f3ea") } }
+    api("com.github.simplified-dev:gson-extras") { version { strictly("c4bde8d") } }
+    api("com.github.simplified-dev:scheduler") { version { strictly("f486253") } }
 
     // JetBrains Annotations
     api(libs.annotations)
@@ -31,11 +31,11 @@ dependencies {
     api(libs.log4j2.api)
     implementation(libs.log4j2.core)
 
-    // Lombok Annotations
-    compileOnly(libs.lombok)
-    annotationProcessor(libs.lombok)
-    testCompileOnly(libs.lombok)
-    testAnnotationProcessor(libs.lombok)
+    // Simplified Annotations
+    compileOnly(libs.simplified.annotations)
+    annotationProcessor(libs.simplified.annotations)
+    testCompileOnly(libs.simplified.annotations)
+    testAnnotationProcessor(libs.simplified.annotations)
 
     // Tests
     testImplementation(libs.hamcrest)
