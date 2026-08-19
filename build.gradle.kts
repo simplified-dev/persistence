@@ -18,11 +18,11 @@ repositories {
 
 dependencies {
     // Simplified Libraries
-    api("com.github.simplified-dev:collections") { version { strictly("8ca6cb8") } }
-    api("com.github.simplified-dev:utils") { version { strictly("821499b") } }
-    api("com.github.simplified-dev:reflection") { version { strictly("6c3b7c5") } }
-    api("com.github.simplified-dev:gson-extras") { version { strictly("f143dc1") } }
-    api("com.github.simplified-dev:scheduler") { version { strictly("c2728d5") } }
+    api("com.github.simplified-dev:collections") { version { strictly("9696ca5") } }
+    api("com.github.simplified-dev:utils") { version { strictly("3d8af56") } }
+    api("com.github.simplified-dev:reflection") { version { strictly("158edbc") } }
+    api("com.github.simplified-dev:gson-extras") { version { strictly("ed1d77e") } }
+    api("com.github.simplified-dev:scheduler") { version { strictly("21570df") } }
 
     // JetBrains Annotations
     api(libs.annotations)
