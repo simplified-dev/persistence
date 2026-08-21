@@ -43,9 +43,10 @@ import java.util.function.BiConsumer;
  * <p>
  * Hibernate 6+ resolves property types eagerly during {@code metadataBuilder.build()},
  * matching fields to registered types by class FQCN. Types with multiple parameterized
- * instances (e.g. {@link GsonListType}, {@link GsonOptionalType}) register a single
- * default instance under the raw class FQCN so every field gets a valid initial binding,
- * then upgrade individual fields to per-element-type instances in {@link #postProcess}.
+ * instances (e.g. a {@code List<E>} or an {@code Optional<I>} handled by
+ * {@link GsonValueType}) register a single default instance under the raw class FQCN so
+ * every field gets a valid initial binding, then upgrade individual fields to
+ * per-element-type instances in {@link #postProcess}.
  */
 public interface TypeRegistrar {
 
