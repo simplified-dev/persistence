@@ -11,7 +11,7 @@ import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.store.EntityStore;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
@@ -38,10 +38,10 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
- * Default {@link Repository} implementation backed by an optional {@link Source}
+ * Default {@link Repository} implementation backed by an optional {@link EntityStore}
  * with optional per-entity post-query processing via {@link #streamPeek}.
  *
- * <p>On construction the repository performs an immediate data load (via the source if
+ * <p>On construction the repository performs an immediate data load (via the store if
  * present, or a no-op for SQL-managed entities). Cache expiry is handled by JCache TTL
  * per entity type, derived from the {@link CacheExpiry} annotation; when entries expire,
  * Hibernate transparently re-queries the database on the next access.</p>
@@ -52,7 +52,7 @@ import java.util.stream.Stream;
  *
  * @param <T> the entity type, which must implement {@link JpaModel}
  * @see Repository
- * @see Source
+ * @see EntityStore
  * @see JpaSession
  */
 @Getter
@@ -69,9 +69,9 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final @NotNull Class<T> type;
 
     /**
-     * The source used to load or reload data on each refresh cycle, or {@code empty} for SQL-managed entities.
+     * The store rows are loaded from on each refresh cycle, or {@code empty} for SQL-managed entities.
      */
-    private final @NotNull Optional<Source<T>> source;
+    private final @NotNull Optional<EntityStore<T>> store;
 
     /**
      * Optional consumer applied to each entity via {@link SingleStream#peek} on every query.
@@ -116,20 +116,20 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private volatile @Nullable ConcurrentList<T> lastLoadedEntities;
 
     /**
-     * Creates a repository with an optional source and stream peek.
+     * Creates a repository with an optional store and stream peek.
      *
-     * <p>Performs an immediate data load via the source (if present) and records the initial load timing.
+     * <p>Performs an immediate data load via the store (if present) and records the initial load timing.
      *
      * @param session the owning JPA session
      * @param type the entity class
-     * @param source the source for loading data on refresh, or {@code null} for SQL-managed entities
+     * @param store the store rows are loaded from on refresh, or {@code null} for SQL-managed entities
      * @param streamPeek optional per-entity consumer applied on every {@link #stream()} call,
      *                   useful for re-attaching transient fields
      */
-    JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @Nullable Source<T> source, @Nullable Consumer<T> streamPeek) {
+    JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @Nullable EntityStore<T> store, @Nullable Consumer<T> streamPeek) {
         this.session = session;
         this.type = type;
-        this.source = Optional.ofNullable(source);
+        this.store = Optional.ofNullable(store);
         this.streamPeek = Optional.ofNullable(streamPeek);
 
         // Cache @Id and @ForeignIds
@@ -209,22 +209,22 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Executes only the source reload phase without cache eviction or warming
+     * Executes only the store reload phase without cache eviction or warming
      * if {@code evictWarmCache} is {@code false}.
      * <p>
-     * Forces an immediate full refresh cycle: source reload, cache eviction,
+     * Forces an immediate full refresh cycle: store reload, cache eviction,
      * and cache warming if {@code evictWarmCache} is {@code true}.
      *
      * <p>Used by {@link JpaSession#refreshAll()} for coordinated multi-repository refresh
      * where eviction and warming are handled as separate phases.
      *
-     * @throws JpaException if the source fails
+     * @throws JpaException if the store fails
      */
     void refresh(boolean evictWarmCache) throws JpaException {
         Instant startTime = Instant.now();
 
         try {
-            this.source.ifPresent(this::persistToDatabase);
+            this.store.ifPresent(this::persistToDatabase);
 
             if (evictWarmCache)
                 this.evict();
@@ -246,10 +246,10 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * properties whose relationship references are null after JSON deserialization. Stale rows
      * are cleaned up separately by {@link #removeStaleEntities()} in reverse topological order.
      *
-     * @param source the source to persist
+     * @param store the store to load from
      */
-    void persistToDatabase(@NotNull Source<T> source) throws JpaException {
-        ConcurrentList<T> entities = source.load(this);
+    void persistToDatabase(@NotNull EntityStore<T> store) throws JpaException {
+        ConcurrentList<T> entities = store.load(this);
         this.lastLoadedEntities = entities;
 
         entities.forEach(entity -> {
@@ -343,8 +343,10 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
             for (JpaModel target : allTargets) {
                 Object targetId = targetIdAccessor.get(target);
 
+                // Two targets stringifying to one id is a corpus mistake either way, and the first
+                // row is the one a reader scanning the table in order would have found.
                 if (targetId != null)
-                    idMap.put(String.valueOf(targetId), target);
+                    idMap.putIfAbsent(String.valueOf(targetId), target);
             }
 
             lookups.put(fieldAccessor.getName(), idMap);

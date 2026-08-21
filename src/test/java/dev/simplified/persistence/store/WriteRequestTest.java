@@ -1,4 +1,4 @@
-package dev.simplified.persistence.source;
+package dev.simplified.persistence.store;
 
 import com.google.gson.Gson;
 import dev.simplified.persistence.JpaModel;

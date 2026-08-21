@@ -9,7 +9,7 @@ import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.store.EntityStore;
 import dev.simplified.persistence.type.TypeRegistrar;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
@@ -458,10 +458,10 @@ public final class JpaSession {
     /**
      * Performs a coordinated 3-phase refresh across all due entity types.
      *
-     * <p><b>Phase 1</b> - Update data sources in topological order (parents first):
+     * <p><b>Phase 1</b> - Update data stores in topological order (parents first):
      * calls {@link JpaRepository#refresh(boolean)} which delegates to the entity's
-     * {@link Source}. JSON sources merge fresh data into the DB; entities without
-     * a source (SQL-managed) are no-ops.</p>
+     * {@link EntityStore}. Document stores merge fresh data into the DB; entities without
+     * a store (SQL-managed) are no-ops.</p>
      *
      * <p><b>Phase 2</b> - Remove stale entities in reverse topological order (children first):
      * calls {@link JpaRepository#removeStaleEntities()} to delete DB rows whose IDs

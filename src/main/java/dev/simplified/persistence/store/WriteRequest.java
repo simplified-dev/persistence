@@ -1,4 +1,4 @@
-package dev.simplified.persistence.source;
+package dev.simplified.persistence.store;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
@@ -17,15 +17,15 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Envelope describing a single write request against a {@link MutableSource}.
+ * Envelope describing a single write request against a {@link EntityStore.Mutable}.
  *
- * <p>Phase 6 wire format for the {@code IQueue<WriteRequest>} write path. Producers
+ * <p>Wire format for the {@code IQueue<WriteRequest>} write path. Producers
  * ({@code simplified-bot} and any future mutators) construct a {@code WriteRequest}
  * via {@link #upsert(Class, JpaModel, Gson, String)} or
  * {@link #delete(Class, JpaModel, Gson, String)}, push it onto the Hazelcast
  * {@code skyblock.writes} queue, and immediately return. The single consumer
  * ({@code simplified-data}) drains the queue, resolves the target
- * {@link MutableSource} via {@link #getSourceId()}, and applies the mutation.
+ * {@link EntityStore.Mutable} via {@link #getSourceId()}, and applies the mutation.
  *
  * <p>The envelope is deliberately plain Java {@link Serializable} with no
  * Hazelcast-specific interfaces like {@code DataSerializable} or {@code Portable}.
@@ -50,7 +50,7 @@ import java.util.UUID;
  * matching the rest of the package's convention (see {@link ManifestIndex}). All
  * fields are final and non-null.
  *
- * @see MutableSource
+ * @see EntityStore.Mutable
  * @see Operation
  */
 @Getter
@@ -84,7 +84,7 @@ public final class WriteRequest implements Serializable {
      * Fully qualified name of the target {@link JpaModel} class, captured from
      * {@link Class#getName()} on the producer side. The consumer resolves this back
      * to a live class via {@link #resolveEntityType()} when it is ready to dispatch
-     * the request to a {@link MutableSource}.
+     * the request to a {@link EntityStore.Mutable}.
      */
     private final @NotNull String entityClassName;
 
@@ -97,10 +97,10 @@ public final class WriteRequest implements Serializable {
     private final @NotNull String entityJson;
 
     /**
-     * Human-readable source id identifying which {@link MutableSource} should apply
-     * this write. Matches the {@code sourceId} used by the Phase 4a
-     * {@link RemoteJsonSource} chain and the Phase 4c {@code ExternalAssetState} row
-     * (for example {@code "skyblock-data"}).
+     * Human-readable source id identifying which {@link EntityStore.Mutable} should apply
+     * this write. Matches the {@code sourceId} carried by the {@link EntityStore} that loads
+     * the same origin and by its {@code ExternalAssetState} row (for example
+     * {@code "skyblock-data"}).
      */
     private final @NotNull String sourceId;
 
@@ -110,7 +110,7 @@ public final class WriteRequest implements Serializable {
      * @param entityType the entity class, used only to capture the FQCN
      * @param entity the entity to persist
      * @param gson the producer's Gson instance used to serialize {@code entity}
-     * @param sourceId the target {@link MutableSource} id
+     * @param sourceId the target {@link EntityStore.Mutable} id
      * @param <T> the entity type
      * @return a new write request with {@link Operation#UPSERT}
      */
@@ -135,13 +135,13 @@ public final class WriteRequest implements Serializable {
      *
      * <p>The full entity is carried in the payload rather than just the id so the
      * consumer can log the full state for audit purposes and so
-     * {@link MutableSource#delete(JpaModel)} receives the same shape it would get
+     * {@link EntityStore.Mutable#delete(JpaModel)} receives the same shape it would get
      * from a local {@code JpaRepository} lookup.
      *
      * @param entityType the entity class, used only to capture the FQCN
      * @param entity the entity to remove
      * @param gson the producer's Gson instance used to serialize {@code entity}
-     * @param sourceId the target {@link MutableSource} id
+     * @param sourceId the target {@link EntityStore.Mutable} id
      * @param <T> the entity type
      * @return a new write request with {@link Operation#DELETE}
      */
@@ -196,8 +196,8 @@ public final class WriteRequest implements Serializable {
      * Resolves {@link #entityClassName} to a live {@link JpaModel} subclass via
      * {@link Class#forName(String)}.
      *
-     * <p>Callers in the Phase 6 consumer use the returned class to look up a
-     * {@link MutableSource} in a per-type registry and to drive
+     * <p>A consumer uses the returned class to look up a
+     * {@link EntityStore.Mutable} in a per-type registry and to drive
      * {@link #deserializeEntity(Gson, Class)}. A {@link ClassNotFoundException} is
      * wrapped in {@link JpaException} with the offending FQCN in the message, so
      * the consumer can surface it as a single WARN log and skip the request without
@@ -256,8 +256,8 @@ public final class WriteRequest implements Serializable {
      * Discriminates between upsert and delete requests.
      *
      * <p>Deliberately minimal - the library does not need to distinguish between
-     * insert and update because every {@link MutableSource} treats them identically
-     * (see {@link MutableSource#upsert(JpaModel)}). If a future phase adds partial
+     * insert and update because every {@link EntityStore.Mutable} treats them identically
+     * (see {@link EntityStore.Mutable#upsert(JpaModel)}). If a future phase adds partial
      * updates or conditional writes, add a new enum constant rather than widening
      * {@code UPSERT}.
      */
@@ -265,13 +265,13 @@ public final class WriteRequest implements Serializable {
 
         /**
          * Create or replace the entity on the target source. The consumer dispatches
-         * to {@link MutableSource#upsert(JpaModel)}.
+         * to {@link EntityStore.Mutable#upsert(JpaModel)}.
          */
         UPSERT,
 
         /**
          * Remove the entity from the target source. The consumer dispatches to
-         * {@link MutableSource#delete(JpaModel)}.
+         * {@link EntityStore.Mutable#delete(JpaModel)}.
          */
         DELETE
 

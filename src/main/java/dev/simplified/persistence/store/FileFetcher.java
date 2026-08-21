@@ -1,4 +1,4 @@
-package dev.simplified.persistence.source;
+package dev.simplified.persistence.store;
 
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
@@ -7,12 +7,11 @@ import org.jetbrains.annotations.NotNull;
  * Fetches the raw UTF-8 text contents of a single file identified by the path recorded in
  * a {@link ManifestIndex.Entry}.
  *
- * <p>Implementations pair with an {@link IndexProvider} to feed a {@link RemoteJsonSource}.
- * Phase 4a ships this interface only; the first concrete implementation (GitHub raw content)
- * lands in Phase 4b inside {@code simplified-data}.
+ * <p>Implementations read one path at a time and hold no manifest of their own, so an
+ * {@link EntityStore} that loads from documents pairs a fetcher with whatever names the paths.
  *
- * @see IndexProvider
- * @see RemoteJsonSource
+ * @see EntityStore
+ * @see ManifestIndex
  */
 @FunctionalInterface
 public interface FileFetcher {

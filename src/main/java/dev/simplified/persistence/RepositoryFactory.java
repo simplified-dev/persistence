@@ -7,7 +7,7 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.sort.Graph;
-import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.store.EntityStore;
 import dev.simplified.reflection.Reflection;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.OneToMany;
@@ -24,7 +24,7 @@ import java.util.stream.Stream;
 
 /**
  * Factory for creating {@link JpaRepository} instances during {@link JpaSession#cacheRepositories()},
- * holding the discovered model list and per-type {@link Source} registrations.
+ * holding the discovered model list and per-type {@link EntityStore} registrations.
  *
  * <p>Provides static utilities ({@link #resolveModels(Class)}) and default method implementations
  * ({@link #create(JpaSession, Class)}) so that custom implementations only need to supply
@@ -43,17 +43,17 @@ public interface RepositoryFactory {
     @NotNull ConcurrentList<Class<JpaModel>> getModels();
 
     /**
-     * The fallback source for entity types without an explicit per-type registration.
+     * The fallback store for entity types without an explicit per-type registration.
      * Returns {@code null} for SQL-managed entities that require no external data loading.
      */
-    default @Nullable Source<?> getDefaultSource() {
+    default @Nullable EntityStore<?> getDefaultStore() {
         return null;
     }
 
     /**
-     * Per-type source registrations, keyed by entity class.
+     * Per-type store registrations, keyed by entity class.
      */
-    default @NotNull ConcurrentMap<Class<?>, Source<?>> getSources() {
+    default @NotNull ConcurrentMap<Class<?>, EntityStore<?>> getStores() {
         return Concurrent.newUnmodifiableMap();
     }
 
@@ -67,8 +67,8 @@ public interface RepositoryFactory {
     /**
      * Creates a repository for the given entity type within the given session.
      *
-     * <p>Resolves the {@link Source} from {@link #getSources()}, falling back
-     * to {@link #getDefaultSource()}, and the optional stream peek from {@link #getPeeks()}.
+     * <p>Resolves the {@link EntityStore} from {@link #getStores()}, falling back
+     * to {@link #getDefaultStore()}, and the optional stream peek from {@link #getPeeks()}.
      *
      * @param session the JPA session that will own the repository
      * @param type the entity class
@@ -77,9 +77,9 @@ public interface RepositoryFactory {
      */
     @SuppressWarnings("unchecked")
     default <T extends JpaModel> @NotNull JpaRepository<T> create(@NotNull JpaSession session, @NotNull Class<T> type) {
-        Source<T> source = (Source<T>) this.getSources().getOrDefault(type, this.getDefaultSource());
+        EntityStore<T> store = (EntityStore<T>) this.getStores().getOrDefault(type, this.getDefaultStore());
         Consumer<T> peek = (Consumer<T>) this.getPeeks().get(type);
-        return new JpaRepository<>(session, type, source, peek);
+        return new JpaRepository<>(session, type, store, peek);
     }
 
     /**
@@ -168,16 +168,16 @@ public interface RepositoryFactory {
 
     /**
      * Fluent builder for constructing the default {@link Impl} with per-type
-     * {@link Source} and stream peek registrations.
+     * {@link EntityStore} and stream peek registrations.
      *
-     * <p>Types without an explicit registration fall back to the default source
+     * <p>Types without an explicit registration fall back to the default store
      * (which defaults to {@code null} - SQL-managed - if not set).
      */
     class Builder {
 
         private @NotNull Class<? extends JpaModel> packageAnchor = JpaModel.class;
-        private @Nullable Source<?> defaultSource;
-        private final @NotNull ConcurrentMap<Class<?>, Source<?>> sources = Concurrent.newMap();
+        private @Nullable EntityStore<?> defaultStore;
+        private final @NotNull ConcurrentMap<Class<?>, EntityStore<?>> stores = Concurrent.newMap();
         private final @NotNull ConcurrentMap<Class<?>, Consumer<?>> peeks = Concurrent.newMap();
 
         /**
@@ -193,40 +193,40 @@ public interface RepositoryFactory {
         }
 
         /**
-         * Sets the default {@link Source} for types without an explicit registration.
+         * Sets the default {@link EntityStore} for types without an explicit registration.
          *
-         * @param source the default source
+         * @param store the default store
          * @return this builder
          */
-        public @NotNull Builder withDefault(@NotNull Source<?> source) {
-            this.defaultSource = source;
+        public @NotNull Builder withDefault(@NotNull EntityStore<?> store) {
+            this.defaultStore = store;
             return this;
         }
 
         /**
-         * Registers a {@link Source} for a specific entity type.
+         * Registers a {@link EntityStore} for a specific entity type.
          *
          * @param type the entity class
-         * @param source the source for this type
+         * @param store the store for this type
          * @param <T> the entity type
          * @return this builder
          */
-        public <T extends JpaModel> @NotNull Builder with(@NotNull Class<T> type, @NotNull Source<T> source) {
-            this.sources.put(type, source);
+        public <T extends JpaModel> @NotNull Builder with(@NotNull Class<T> type, @NotNull EntityStore<T> store) {
+            this.stores.put(type, store);
             return this;
         }
 
         /**
-         * Registers a {@link Source} and stream peek for a specific entity type.
+         * Registers a {@link EntityStore} and stream peek for a specific entity type.
          *
          * @param type the entity class
-         * @param source the source for this type
+         * @param store the store for this type
          * @param peek the per-entity consumer applied on every query
          * @param <T> the entity type
          * @return this builder
          */
-        public <T extends JpaModel> @NotNull Builder with(@NotNull Class<T> type, @NotNull Source<T> source, @NotNull Consumer<T> peek) {
-            this.sources.put(type, source);
+        public <T extends JpaModel> @NotNull Builder with(@NotNull Class<T> type, @NotNull EntityStore<T> store, @NotNull Consumer<T> peek) {
+            this.stores.put(type, store);
             this.peeks.put(type, peek);
             return this;
         }
@@ -245,8 +245,8 @@ public interface RepositoryFactory {
         public @NotNull RepositoryFactory build() {
             return new Impl(
                 RepositoryFactory.resolveModels(this.packageAnchor),
-                this.defaultSource,
-                this.sources.toUnmodifiable(),
+                this.defaultStore,
+                this.stores.toUnmodifiable(),
                 this.peeks.toUnmodifiable()
             );
         }
@@ -255,7 +255,7 @@ public interface RepositoryFactory {
 
     /**
      * Default implementation of {@link RepositoryFactory} backed by per-type
-     * {@link Source} registrations and optional stream peek consumers.
+     * {@link EntityStore} registrations and optional stream peek consumers.
      *
      * <p>Constructed exclusively via {@link RepositoryFactory#builder()}.
      *
@@ -271,14 +271,14 @@ public interface RepositoryFactory {
         private final @NotNull ConcurrentList<Class<JpaModel>> models;
 
         /**
-         * The fallback source for types without an explicit registration.
+         * The fallback store for types without an explicit registration.
          */
-        private final @Nullable Source<?> defaultSource;
+        private final @Nullable EntityStore<?> defaultStore;
 
         /**
-         * Per-type source registrations.
+         * Per-type store registrations.
          */
-        private final @NotNull ConcurrentMap<Class<?>, Source<?>> sources;
+        private final @NotNull ConcurrentMap<Class<?>, EntityStore<?>> stores;
 
         /**
          * Per-type stream peek consumers.

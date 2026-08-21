@@ -6,7 +6,7 @@ import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
-import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.store.EntityStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * for the specified model subset while skipping unregistered or unrelated models.
  *
  * <p>Each test wires a fresh session using two test models ({@link TestParentModel}
- * and {@link TestChildModel}) backed by counting {@link Source} lambdas so the test
+ * and {@link TestChildModel}) backed by counting {@link EntityStore} lambdas so the test
  * can observe exactly how many times each model's source was reloaded. The counting
  * sources return a deterministic one-entity list on every call so the downstream
  * stale-removal and evict phases exercise non-trivial code paths.
@@ -48,7 +48,7 @@ class JpaSessionRefreshModelsTest {
         this.parentSourceCalls = new AtomicInteger();
         this.childSourceCalls = new AtomicInteger();
 
-        Source<TestParentModel> parentSource = repo -> {
+        EntityStore<TestParentModel> parentSource = repo -> {
             this.parentSourceCalls.incrementAndGet();
             TestParentModel parent = new TestParentModel();
             parent.setId(1);
@@ -56,7 +56,7 @@ class JpaSessionRefreshModelsTest {
             return Concurrent.newList(parent);
         };
 
-        Source<TestChildModel> childSource = repo -> {
+        EntityStore<TestChildModel> childSource = repo -> {
             this.childSourceCalls.incrementAndGet();
             TestChildModel child = new TestChildModel();
             child.setId(10);
@@ -155,7 +155,7 @@ class JpaSessionRefreshModelsTest {
         AtomicInteger parentCalls = new AtomicInteger();
         java.util.concurrent.atomic.AtomicBoolean explode = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        Source<TestParentModel> togglingSource = repo -> {
+        EntityStore<TestParentModel> togglingSource = repo -> {
             parentCalls.incrementAndGet();
 
             if (explode.get())
