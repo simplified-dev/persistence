@@ -255,7 +255,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
             Repository<? extends JpaModel> repository = this.session.getRepository(target);
             Object held = reflection.getField(idProperty).get(entity);
 
-            if (Collection.class.isAssignableFrom(field.getType())) {
+            if (Collection.class.isAssignableFrom(field.getFieldType())) {
                 Collection<String> ids = (Collection<String>) held;
 
                 if (ids == null || ids.isEmpty()) {
@@ -333,13 +333,16 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * Reads the type a linking field resolves to, which is its element type when it holds many.
      *
+     * <p>Read through {@link FieldAccessor#getFieldType()} rather than {@code getType()}, which
+     * answers the class that declares the field.
+     *
      * @param field the linking field
      * @return the target entity class
      */
     @SuppressWarnings("unchecked")
     private static @NotNull Class<? extends JpaModel> targetOf(@NotNull FieldAccessor<?> field) {
-        if (!Collection.class.isAssignableFrom(field.getType()))
-            return (Class<? extends JpaModel>) field.getType();
+        if (!Collection.class.isAssignableFrom(field.getFieldType()))
+            return (Class<? extends JpaModel>) field.getFieldType();
 
         ParameterizedType listType = (ParameterizedType) field.getGenericType();
         return (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
