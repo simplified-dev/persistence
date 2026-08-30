@@ -24,40 +24,37 @@ closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa
 > - Type: **RISK**
 > - Status: **OPEN** - inherent to holding a generation, accepted deliberately
 
-> #### Nothing resolves standalone until collections and the contracts are published
-> `build.gradle.kts:21` pins `com.github.simplified-dev:persistence-contracts` at
-> `strictly("master-SNAPSHOT")`, and `:22` pins `com.github.simplified-dev:collections` at
-> `strictly("9696ca5")`. Neither coordinate resolves to what this branch needs.
->
-> `persistence-contracts` is a repository created by this pass. It has never been pushed and JitPack
-> has never seen it, so `master-SNAPSHOT` is a placeholder for a sha that does not exist yet. The same
-> pin appears in `Simplified-Api/github/build.gradle.kts`, `SkyBlock-Simplified/api/build.gradle.kts`
-> and `SkyBlock-Simplified/data/build.gradle.kts`.
+> #### Nothing resolves standalone until collections is published
+> `build.gradle.kts:21` pins `com.github.simplified-dev:collections` at `strictly("9696ca5")`, and
+> that coordinate does not resolve to what this branch needs.
 >
 > At `collections` `9696ca5` the query package holds four files and there is no `Indexable`, no
 > `IndexCache` and no `@Indexed`, so `Repository.indexes()` does not compile rather than merely not
 > helping. The sha that carries the indexing surface is `5df6ece` on `collections`' `feat/indexing`,
-> which is 21 commits ahead of `origin/master` and unpushed.
+> which is 21 commits ahead of `origin/master` and unpushed. The same pin appears in
+> `Simplified-Api/github/build.gradle.kts`, `Simplified-Api/skyblock/build.gradle.kts`,
+> `Simplified-Api/hypixel/build.gradle.kts`, `SkyBlock-Simplified/api/build.gradle.kts` and
+> `SkyBlock-Simplified/data/build.gradle.kts`.
 >
 > Everything therefore verifies only through the root composite at `W:/Workspace/Java/Simplified`,
 > which substitutes the local projects:
 >
 > ```
-> ./gradlew :Simplified-Dev:persistence-contracts:test :Simplified-Dev:persistence:test \
->   :Simplified-Api:github:test :Simplified-Api:skyblock:test :Simplified-Api:hypixel:test \
+> ./gradlew :Simplified-Dev:persistence:test :Simplified-Api:github:test \
+>   :Simplified-Api:skyblock:test :Simplified-Api:hypixel:test \
 >   :SkyBlock-Simplified:api:test :SkyBlock-Simplified:data:test
 > ```
 >
-> Closing it is a sequence on a third-party service, not a line in a build file: push `collections`
-> and `persistence-contracts`, get a JitPack build of each, then move the pins in dependency order and
-> confirm each module resolves the published surface rather than the composite's substitution masking
-> it.
+> Closing it is a sequence on a third-party service, not a line in a build file: push `collections`,
+> get a JitPack build, then move the pins and confirm each module resolves the published surface
+> rather than the composite's substitution masking it.
 >
-> - Affected: `build.gradle.kts:21-22`; `Simplified-Api/github/build.gradle.kts`;
+> - Affected: `build.gradle.kts:21`; `Simplified-Api/github/build.gradle.kts`;
+>   `Simplified-Api/skyblock/build.gradle.kts`; `Simplified-Api/hypixel/build.gradle.kts`;
 >   `SkyBlock-Simplified/api/build.gradle.kts`; `SkyBlock-Simplified/data/build.gradle.kts`;
 >   `Simplified-Dev/collections` branch `feat/indexing` at `5df6ece`
 > - Type: **GAP**
-> - Status: **OPEN** - needs two pushes and two third-party builds
+> - Status: **OPEN** - needs one push and one third-party build
 
 > #### A single-valued link that resolves to nothing is set to null in silence
 > `@Linked` on a non-collection field resolves the id its argument names against the target type's

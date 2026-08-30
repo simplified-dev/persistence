@@ -15,10 +15,10 @@ import java.util.Comparator;
  * draws from more than one origin overrides {@link #sourceFor(Class)}.
  *
  * <pre>{@code
- * public class SkyBlockFactory implements RepositoryFactory {
+ * public class CorpusFactory implements RepositoryFactory {
  *
  *     @Getter private final ConcurrentList<Class<JpaModel>> models = RepositoryFactory.resolveModels(Item.class);
- *     @Getter private final Source source = CORPUS.reading();
+ *     @Getter private final Source source = Source.documents(origin, gson);
  *
  * }
  * }</pre>

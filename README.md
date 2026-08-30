@@ -152,12 +152,11 @@ ConcurrentList<User> users = userRepo.findAll();
 
 | Package | Description |
 |---------|-------------|
-| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `RepositoryFactory`, `JpaConfig`, `JpaModel`, `@CacheExpiry`, `@ForeignIds`) |
-| `dev.simplified.persistence.asset` | Change-detection state for external asset origins (`ExternalAssetState`, `ExternalAssetEntryState`) |
+| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `RepositoryFactory`, `JpaConfig`, `JpaModel`, `@Hydration`, `@Linked`) |
 | `dev.simplified.persistence.converter` | JPA attribute converters (`UUIDConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
-| `dev.simplified.persistence.store` | Where a type's rows come from (`EntityStore`, `FileFetcher`, `ManifestIndex`, `WriteRequest`) |
+| `dev.simplified.persistence.store` | Where a type's rows come from and how they go back (`Source`, `DocumentOrigin`, `WriteRequest`) |
 | `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonValueType`, `GsonType`) with type and converter registrars |
 
 ### Project Structure
@@ -166,22 +165,20 @@ ConcurrentList<User> users = userRepo.findAll();
 persistence/
 ├── src/
 │   ├── main/java/dev/simplified/persistence/
-│   │   ├── CacheExpiry.java
 │   │   ├── CacheMissingStrategy.java
-│   │   ├── ForeignIds.java
+│   │   ├── Hydration.java
+│   │   ├── HydrationState.java
 │   │   ├── JpaCacheProvider.java
 │   │   ├── JpaConfig.java
 │   │   ├── JpaExclusionStrategy.java
+│   │   ├── JpaGsonContributor.java
 │   │   ├── JpaModel.java
 │   │   ├── JpaRepository.java
 │   │   ├── JpaSession.java
+│   │   ├── Linked.java
 │   │   ├── Repository.java
 │   │   ├── RepositoryFactory.java
 │   │   ├── SessionManager.java
-│   │   ├── asset/
-│   │   │   ├── ExternalAssetEntryState.java
-│   │   │   ├── ExternalAssetState.java
-│   │   │   └── package-info.java
 │   │   ├── converter/
 │   │   │   └── UUIDConverter.java
 │   │   ├── driver/
@@ -196,15 +193,16 @@ persistence/
 │   │   ├── exception/
 │   │   │   └── JpaException.java
 │   │   ├── store/
-│   │   │   ├── EntityStore.java
-│   │   │   ├── FileFetcher.java
-│   │   │   ├── ManifestIndex.java
+│   │   │   ├── DocumentOrigin.java
+│   │   │   ├── Source.java
 │   │   │   └── WriteRequest.java
 │   │   └── type/
 │   │       ├── ConverterRegistrar.java
 │   │       ├── GsonType.java
 │   │       ├── GsonValueType.java
 │   │       └── TypeRegistrar.java
+│   ├── main/resources/META-INF/services/
+│   │   └── dev.simplified.gson.GsonContributor
 │   └── test/
 ├── build.gradle.kts
 ├── gradle/
