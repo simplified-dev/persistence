@@ -22,11 +22,14 @@ import java.util.UUID;
 /**
  * Immutable configuration class for JPA sessions, constructed via its nested {@link Builder}.
  *
- * <p>Holds connection details, cache settings, and {@link GsonSettings} configuration.
- * The {@link JpaDriver} controls the database connection mode (external RDBMS,
- * embedded H2, etc.), while data-source concerns (JSON vs SQL) and entity discovery
- * are expressed through the {@link RepositoryFactory} and its {@link Source}
- * registrations.</p>
+ * <p>Holds connection details, cache settings, and {@link GsonSettings} configuration. Entity
+ * discovery and where each type's rows come from are expressed through the
+ * {@link RepositoryFactory} and its {@link Source}.</p>
+ *
+ * <p>The {@link JpaDriver} is the gate. Present, it names a database and {@link JpaSession} builds
+ * the whole relational stack around it - service registry, metadata, session factory, JCache
+ * regions. Absent, none of that runs, the connection and cache fields below carry no meaning, and a
+ * session serves types whose rows a {@link Source} supplies.</p>
  *
  * <p>Use {@link #commonSql()} for a ready-made MariaDB preset, {@link #common(JpaDriver, String)}
  * for a pre-filled {@link Builder} with sensible cache defaults, or {@link #builder()} for
@@ -42,7 +45,11 @@ import java.util.UUID;
 public final class JpaConfig {
 
     private final @NotNull UUID uniqueId = UUID.randomUUID();
-    private final @NotNull JpaDriver driver;
+
+    /**
+     * The database this session connects to, empty when it has none.
+     */
+    private final @NotNull Optional<JpaDriver> driver;
     private final @NotNull String host;
     private final int port;
     private final @NotNull String schema;
@@ -115,20 +122,28 @@ public final class JpaConfig {
     }
 
     /**
-     * Builds a default MariaDB configuration using the {@code DATABASE_HOST} environment
-     * variable as the schema name, with sensible cache defaults.
+     * Builds a MariaDB configuration from the {@code DATABASE_HOST}, {@code DATABASE_PORT},
+     * {@code DATABASE_SCHEMA}, {@code DATABASE_USER} and {@code DATABASE_PASSWORD} environment
+     * variables, with sensible cache defaults.
      *
      * @return a fully constructed MariaDB configuration
+     * @throws IllegalStateException if any of the connection variables is unset
      */
     public static @NotNull JpaConfig commonSql() {
-        return common(new MariaDbDriver(), SystemUtil.getEnv("DATABASE_HOST")).build();
+        return common(new MariaDbDriver(), SystemUtil.getEnv("DATABASE_SCHEMA"))
+            .withHost(SystemUtil.getEnv("DATABASE_HOST"))
+            .withPort(SystemUtil.getEnv("DATABASE_PORT").map(Integer::parseInt))
+            .withUser(SystemUtil.getEnv("DATABASE_USER"))
+            .withPassword(SystemUtil.getEnv("DATABASE_PASSWORD"))
+            .build();
     }
 
     /**
      * Sets the log level and propagates it to all underlying loggers.
      *
-     * <p>Affected loggers include Hibernate, EhCache, JBoss Logging, Logback, the JDBC driver,
-     * and per-entity cache regions. In SQL mode, the HikariCP logger is also updated.</p>
+     * <p>Affected loggers include JBoss Logging and Logback always, and - with a {@link JpaDriver}
+     * present - Hibernate, EhCache, the JDBC driver, the per-entity cache regions and, for a
+     * non-embedded driver, HikariCP.</p>
      *
      * <p>Delegates to {@link Logging} for backend-agnostic level propagation.</p>
      *
@@ -138,32 +153,35 @@ public final class JpaConfig {
         this.logLevel = logLevel;
         Logging.setLevel("org.jboss.logging", logLevel);
         Logging.setLevel("ch.qos.logback", logLevel);
-        Logging.setLevel("org.hibernate", logLevel);
-        Logging.setLevel("org.ehcache", logLevel);
-        Logging.setLevel(this.getDriver().getClassPath(), logLevel);
-        Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-update-timestamps-region"), logLevel);
-        Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-query-results-region"), logLevel);
-        this.getRepositoryFactory().getModels().forEach(model -> Logging.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), logLevel));
 
-        if (!this.getDriver().isEmbedded())
-            Logging.setLevel("com.zaxxer.hikari", logLevel);
+        this.getDriver().ifPresent(driver -> {
+            Logging.setLevel("org.hibernate", logLevel);
+            Logging.setLevel("org.ehcache", logLevel);
+            Logging.setLevel(driver.getClassPath(), logLevel);
+            Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-update-timestamps-region"), logLevel);
+            Logging.setLevel(String.format("%s-%s", Ehcache.class, "default-query-results-region"), logLevel);
+            this.getRepositoryFactory().getModels().forEach(model -> Logging.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), logLevel));
+
+            if (!driver.isEmbedded())
+                Logging.setLevel("com.zaxxer.hikari", logLevel);
+        });
     }
 
     /**
      * Fluent builder for constructing {@link JpaConfig} instances.
      *
-     * <p>All fields carry sensible defaults. The {@code schema} name is always required.
-     * For non-embedded drivers, connection fields ({@code host}, {@code port}, {@code user},
-     * {@code password}) are also validated at {@link #build()} time. For embedded drivers
-     * (when {@link JpaDriver#isEmbedded()} returns {@code true}), those connection fields
-     * are optional and ignored.</p>
+     * <p>All fields carry sensible defaults, and {@code driver} is the one that decides what the
+     * rest mean. Without one nothing else is validated and the session builds no relational stack.
+     * With one, a {@code schema} name is required, and for a non-embedded driver so are
+     * {@code host}, {@code port}, {@code user} and {@code password}. For an embedded driver
+     * (when {@link JpaDriver#isEmbedded()} returns {@code true}) those connection fields are
+     * optional and ignored.</p>
      *
      * @see JpaConfig#builder()
      */
     public static class Builder {
 
-        @BuildFlag(nonNull = true)
-        private JpaDriver driver = new MariaDbDriver();
+        private Optional<JpaDriver> driver = Optional.empty();
         private Optional<String> host = Optional.empty();
         private Optional<Integer> port = Optional.empty();
         private Optional<String> schema = Optional.empty();
@@ -241,10 +259,11 @@ public final class JpaConfig {
         }
 
         /**
-         * Sets the {@link JpaDriver} used for database connectivity.
+         * Sets the {@link JpaDriver} used for database connectivity, which is what makes the built
+         * session relational.
          */
         public Builder withDriver(@NotNull JpaDriver driver) {
-            this.driver = driver;
+            this.driver = Optional.of(driver);
             return this;
         }
 
@@ -382,26 +401,23 @@ public final class JpaConfig {
         /**
          * Validates builder flags, resolves defaults, and constructs the {@link JpaConfig}.
          *
-         * <p>A schema name is always required. For non-embedded drivers, all connection
-         * fields ({@code host}, {@code port}, {@code user}, {@code password}) must also
-         * be present or an {@link IllegalStateException} is thrown.</p>
+         * <p>Nothing is required without a driver, because nothing else in this builder describes
+         * anything then. With one, a schema name is required, and for a non-embedded driver so are
+         * {@code host}, {@code port}, {@code user} and {@code password}, or an
+         * {@link IllegalStateException} is thrown.</p>
          *
          * @return a fully constructed, immutable {@link JpaConfig}
          * @throws IllegalStateException if required fields are missing
          */
         public @NotNull JpaConfig build() {
             Reflection.validateFlags(this);
-
-            if (this.schema.isEmpty())
-                throw new IllegalStateException("schema is required");
-
-            this.checkEmbedded();
+            this.driver.ifPresent(this::checkConnection);
 
             JpaConfig jpaConfig = new JpaConfig(
                 this.driver,
                 this.host.orElse(""),
-                this.port.orElse(this.driver.getDefaultPort()),
-                this.schema.orElseThrow(),
+                this.port.orElse(this.driver.map(JpaDriver::getDefaultPort).orElse(0)),
+                this.schema.orElse(""),
                 this.user.orElse(""),
                 this.password.orElse(""),
                 this.usingQueryCache,
@@ -421,12 +437,18 @@ public final class JpaConfig {
         }
 
         /**
-         * Validates that connection fields are present for non-embedded drivers.
+         * Validates the fields a database needs, which is a schema always and the connection
+         * fields for a non-embedded driver.
          *
-         * @throws IllegalStateException if the driver is not embedded and any connection field is empty
+         * @param driver the driver the session will connect through
+         * @throws IllegalStateException if the schema is empty, or the driver is not embedded and any
+         *         connection field is empty
          */
-        private void checkEmbedded() {
-            if (this.driver.isEmbedded())
+        private void checkConnection(@NotNull JpaDriver driver) {
+            if (this.schema.isEmpty())
+                throw new IllegalStateException("schema is required for a driver");
+
+            if (driver.isEmbedded())
                 return;
 
             if (this.host.isEmpty()) throw new IllegalStateException("host is required for non-embedded drivers");

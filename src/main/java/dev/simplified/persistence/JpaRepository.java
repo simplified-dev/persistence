@@ -14,7 +14,6 @@ import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
 import jakarta.persistence.Id;
-import org.hibernate.SessionFactory;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -346,22 +345,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
         ParameterizedType listType = (ParameterizedType) field.getGenericType();
         return (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
-    }
-
-    /**
-     * Evicts the Hibernate L2 cache region for this entity type.
-     *
-     * @throws JpaException if cache eviction fails
-     */
-    public void evict() throws JpaException {
-        try {
-            SessionFactory sessionFactory = this.getSession().getSessionFactory();
-
-            if (sessionFactory != null && sessionFactory.getCache() != null)
-                sessionFactory.getCache().evict(this.getType());
-        } catch (Exception ex) {
-            throw new JpaException(ex);
-        }
     }
 
     /**

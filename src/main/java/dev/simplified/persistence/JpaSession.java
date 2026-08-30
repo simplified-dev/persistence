@@ -6,8 +6,8 @@ import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
-import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.gson.GsonSettings;
+import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.store.Source;
 import dev.simplified.persistence.store.WriteRequest;
@@ -32,18 +32,6 @@ import org.hibernate.mapping.Column;
 import org.hibernate.mapping.PersistentClass;
 import org.hibernate.mapping.Property;
 import org.hibernate.mapping.SimpleValue;
-import org.hibernate.tool.schema.SourceType;
-import org.hibernate.tool.schema.TargetType;
-import org.hibernate.tool.schema.internal.ExceptionHandlerHaltImpl;
-import org.hibernate.tool.schema.internal.exec.ScriptTargetOutputToFile;
-import org.hibernate.tool.schema.spi.ContributableMatcher;
-import org.hibernate.tool.schema.spi.ExceptionHandler;
-import org.hibernate.tool.schema.spi.ExecutionOptions;
-import org.hibernate.tool.schema.spi.SchemaManagementTool;
-import org.hibernate.tool.schema.spi.ScriptSourceInput;
-import org.hibernate.tool.schema.spi.ScriptTargetOutput;
-import org.hibernate.tool.schema.spi.SourceDescriptor;
-import org.hibernate.tool.schema.spi.TargetDescriptor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -52,45 +40,36 @@ import javax.cache.Caching;
 import javax.cache.configuration.MutableConfiguration;
 import javax.cache.expiry.Duration;
 import javax.cache.expiry.ModifiedExpiryPolicy;
-import java.io.IOException;
 import java.lang.reflect.Modifier;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.Instant;
-import java.util.Collection;
-import java.util.EnumSet;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * A fully self-initializing JPA session backed by a Hibernate {@link SessionFactory}
- * with JCache (EhCache) second-level caching.
+ * A fully self-initializing JPA session holding one {@link JpaRepository} per registered type.
  *
- * <p>The constructor performs the complete Hibernate bootstrap - building the
- * {@link StandardServiceRegistry}, discovering {@link TypeRegistrar} implementations,
- * constructing {@link Metadata}, and opening the {@link SessionFactory}. Once constructed,
- * the session is immediately active and ready for use.</p>
+ * <p>The {@link JpaConfig#getDriver() driver} decides how much of this class runs. With one, the
+ * constructor performs the complete Hibernate bootstrap - building the
+ * {@link StandardServiceRegistry}, discovering {@link TypeRegistrar} implementations, constructing
+ * {@link Metadata}, opening the {@link SessionFactory} and creating the JCache regions. Without one
+ * there is no database to register anything against, so none of that runs and none of it needs to be
+ * on the classpath; every type reads through the {@link Source} its factory declares.</p>
  *
  * <p>Typical lifecycle managed by {@link SessionManager}:</p>
  * <ol>
- *     <li><b>Construction</b> - builds JCache regions with per-entity TTL, service registry,
- *         metadata, and session factory</li>
+ *     <li><b>Construction</b> - with a driver, builds JCache regions with per-entity TTL, service
+ *         registry, metadata, and session factory</li>
  *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per discovered model
- *         and performs the initial data load</li>
- *     <li>{@link #shutdown()} - clears repositories, shuts down the scheduler, closes the
- *         session factory, destroys the service registry, and removes JCache regions</li>
+ *         and hydrates every one of them</li>
+ *     <li>{@link #shutdown()} - clears repositories, shuts down the scheduler and, with a driver,
+ *         closes the session factory, destroys the service registry and removes JCache regions</li>
  * </ol>
  *
- * <p>Provides repository lookup via {@link #getRepository(Class)}, managed session access via
- * {@link #with(Consumer)} / {@link #with(Function)}, and transactional execution via
+ * <p>Provides repository lookup via {@link #getRepository(Class)}, writes via
+ * {@link #write(WriteRequest)}, and - for a session that holds a driver - managed Hibernate access
+ * via {@link #with(Consumer)} / {@link #with(Function)} and transactional execution via
  * {@link #transaction(Consumer)} / {@link #transaction(Function)}.</p>
  *
  * @see JpaConfig
@@ -133,24 +112,26 @@ public final class JpaSession {
     private final @NotNull Gson gson;
 
     /**
-     * Assembled Hibernate and HikariCP connection properties.
+     * Assembled Hibernate and HikariCP connection properties, empty without a driver.
      */
     private final @NotNull ConcurrentMap<String, Object> properties;
 
     /**
-     * Hibernate entity metadata including custom type registrations and column adjustments.
+     * Hibernate entity metadata including custom type registrations and column adjustments,
+     * or {@code null} without a driver.
      */
-    private final @NotNull Metadata metadata;
+    private final @Nullable Metadata metadata;
 
     /**
-     * The Hibernate session factory opened from {@link #metadata}.
+     * The Hibernate session factory opened from {@link #metadata}, or {@code null} without a driver.
      */
-    private final @NotNull SessionFactory sessionFactory;
+    private final @Nullable SessionFactory sessionFactory;
 
     /**
-     * The Hibernate service registry backing {@link #sessionFactory}.
+     * The Hibernate service registry backing {@link #sessionFactory}, or {@code null} without a
+     * driver.
      */
-    private final @NotNull StandardServiceRegistry serviceRegistry;
+    private final @Nullable StandardServiceRegistry serviceRegistry;
 
     /**
      * Timing snapshot of the full constructor bootstrap.
@@ -175,11 +156,15 @@ public final class JpaSession {
     /**
      * Constructs a fully initialized session from the given configuration.
      *
-     * <p>Resolves the model list via {@link RepositoryFactory#getModels()}, builds JCache regions
-     * for query and timestamp caching, assembles Hibernate properties, creates the
-     * {@link StandardServiceRegistry}, discovers and runs {@link TypeRegistrar} implementations,
-     * builds {@link Metadata} (with column length adjustments for embedded drivers), and opens
-     * the {@link SessionFactory}.</p>
+     * <p>Resolves the model list via {@link RepositoryFactory#getModels()} and, when the config
+     * holds a {@link JpaDriver}, builds JCache regions for query and timestamp caching, assembles
+     * Hibernate properties, creates the {@link StandardServiceRegistry}, discovers and runs
+     * {@link TypeRegistrar} implementations, builds {@link Metadata} (with column length adjustments
+     * for embedded drivers), and opens the {@link SessionFactory}.</p>
+     *
+     * <p>Without a driver there is nothing to bootstrap: no registry, no metadata, no session
+     * factory and no cache regions. That is the one branch, it is taken here, and nothing on a read
+     * path asks the question again.</p>
      *
      * @param config the configuration defining driver, repository factory, and connection settings
      */
@@ -190,28 +175,37 @@ public final class JpaSession {
         this.scheduler = new Scheduler();
         this.gson = config.getGsonSettings().create();
 
-        // Build JCache regions. The query-results and update-timestamps regions are only
-        // created when query caching is actually enabled - for HAZELCAST_* providers Phase 2d
-        // unconditionally disables query caching, so creating these regions would leave empty
-        // never-used JCache caches sitting on the cluster.
-        boolean queryCacheActive = config.isUsingQueryCache()
-            && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_CLIENT
-            && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_EMBEDDED;
-        if (queryCacheActive) {
-            this.buildCacheConfiguration("default-update-timestamps-region", Duration.ETERNAL);
-            long ttl = config.getQueryResultsTTL();
-            Duration queryDuration = ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl);
-            this.buildCacheConfiguration("default-query-results-region", queryDuration);
-        }
+        if (config.getDriver().isPresent()) {
+            JpaDriver driver = config.getDriver().orElseThrow();
 
-        // Build Hibernate infrastructure
-        this.properties = this.createProperties();
-        this.serviceRegistry = new StandardServiceRegistryBuilder()
-            .applySettings(this.properties)
-            .build();
-        MetadataSources sources = this.createMetadataSources(this.serviceRegistry);
-        this.metadata = this.createMetadata(sources.getMetadataBuilder());
-        this.sessionFactory = this.metadata.buildSessionFactory();
+            // Build JCache regions. The query-results and update-timestamps regions are only
+            // created when query caching is actually enabled - for HAZELCAST_* providers Phase 2d
+            // unconditionally disables query caching, so creating these regions would leave empty
+            // never-used JCache caches sitting on the cluster.
+            boolean queryCacheActive = config.isUsingQueryCache()
+                && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_CLIENT
+                && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_EMBEDDED;
+            if (queryCacheActive) {
+                this.buildCacheConfiguration("default-update-timestamps-region", Duration.ETERNAL);
+                long ttl = config.getQueryResultsTTL();
+                Duration queryDuration = ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl);
+                this.buildCacheConfiguration("default-query-results-region", queryDuration);
+            }
+
+            // Build Hibernate infrastructure
+            this.properties = this.createProperties(driver);
+            this.serviceRegistry = new StandardServiceRegistryBuilder()
+                .applySettings(this.properties)
+                .build();
+            MetadataSources sources = this.createMetadataSources(this.serviceRegistry);
+            this.metadata = this.createMetadata(sources.getMetadataBuilder(), driver);
+            this.sessionFactory = this.metadata.buildSessionFactory();
+        } else {
+            this.properties = Concurrent.<String, Object>newMap().toUnmodifiable();
+            this.serviceRegistry = null;
+            this.metadata = null;
+            this.sessionFactory = null;
+        }
 
         this.initialization = Stopwatch.of(startTime);
     }
@@ -279,11 +273,13 @@ public final class JpaSession {
 
     /**
      * Assembles Hibernate and HikariCP properties from the {@link JpaConfig}.
+     *
+     * @param driver the driver the session connects through
      */
-    private @NotNull ConcurrentMap<String, Object> createProperties() {
+    private @NotNull ConcurrentMap<String, Object> createProperties(@NotNull JpaDriver driver) {
         ConcurrentMap<String, Object> properties = Concurrent.newMap();
 
-        if (this.config.getDriver().isEmbedded()) {
+        if (driver.isEmbedded()) {
             // Embedded: create schema fresh on each startup; no connection pool needed
             properties.put("hibernate.hbm2ddl.auto", "create-drop");
         } else {
@@ -294,11 +290,11 @@ public final class JpaSession {
             properties.put("hikari.maximumPoolSize", 20);
         }
 
-        properties.put("hibernate.dialect", this.config.getDriver().getDialectClass());
-        properties.put("hibernate.connection.driver_class", this.config.getDriver().getClassPath());
+        properties.put("hibernate.dialect", driver.getDialectClass());
+        properties.put("hibernate.connection.driver_class", driver.getClassPath());
         properties.put("hibernate.globally_quoted_identifiers", true);
 
-        properties.put("hibernate.connection.url", this.config.getDriver().getConnectionUrl(
+        properties.put("hibernate.connection.url", driver.getConnectionUrl(
             this.config.getHost(),
             this.config.getPort(),
             this.config.getSchema()
@@ -378,9 +374,10 @@ public final class JpaSession {
      * for embedded drivers.
      *
      * @param metadataBuilder the builder to register custom types with
+     * @param driver the driver the session connects through
      * @return the fully built and post-processed metadata
      */
-    private @NotNull Metadata createMetadata(@NotNull MetadataBuilder metadataBuilder) {
+    private @NotNull Metadata createMetadata(@NotNull MetadataBuilder metadataBuilder, @NotNull JpaDriver driver) {
         ConcurrentList<TypeRegistrar> registrars = Reflection.getResources()
             .filterPackage(TypeRegistrar.class)
             .getSubtypesOf(TypeRegistrar.class)
@@ -396,24 +393,23 @@ public final class JpaSession {
 
         Metadata metadata = metadataBuilder.build();
         registrars.forEach(registrar -> registrar.postProcess(metadata));
-        this.adjustColumnLength(metadata);
+
+        if (driver.isEmbedded())
+            adjustColumnLength(metadata);
+
         return metadata;
     }
 
     /**
      * Widens all default-length ({@link Column#getLength() 255}) {@code VARCHAR} columns
-     * to 1,000,000 for embedded drivers, preventing truncation of JSON-sourced data whose
-     * lengths are unpredictable.
-     * <p>
-     * This is a no-op for non-embedded drivers where column sizes are governed by the
-     * production schema.
+     * to 1,000,000, preventing truncation of data whose lengths are unpredictable.
+     *
+     * <p>Only an embedded driver creates its own schema, so only an embedded driver is asked for
+     * this. Elsewhere column sizes are governed by the production schema.
      *
      * @param metadata the built Hibernate metadata whose column definitions are adjusted in place
      */
-    private void adjustColumnLength(@NotNull Metadata metadata) {
-        if (!this.getConfig().getDriver().isEmbedded())
-            return;
-
+    private static void adjustColumnLength(@NotNull Metadata metadata) {
         for (PersistentClass pc : metadata.getEntityBindings()) {
             for (Property prop : pc.getProperties()) {
                 if (prop.getValue() instanceof SimpleValue sv) {
@@ -484,8 +480,12 @@ public final class JpaSession {
      * came from.
      *
      * @return a source reading whole tables through Hibernate
+     * @throws JpaException if the session holds no driver, so there is no database to be the origin
      */
     private @NotNull Source relational() {
+        if (this.sessionFactory == null)
+            throw new JpaException("A type whose rows the database authors needs a driver");
+
         return new Source.Writable() {
 
             @Override
@@ -515,7 +515,7 @@ public final class JpaSession {
 
                 // upsertMultiple bypasses dirty checking entirely, which is what keeps a row carrying a
                 // read-only join column from raising HHH000502 when its association is not loaded.
-                try (StatelessSession stateless = JpaSession.this.sessionFactory.openStatelessSession()) {
+                try (StatelessSession stateless = JpaSession.this.factory().openStatelessSession()) {
                     stateless.getTransaction().begin();
                     stateless.upsertMultiple(request.rows());
                     stateless.getTransaction().commit();
@@ -604,121 +604,6 @@ public final class JpaSession {
 
 
     /**
-     * Exports this session's DDL schema to a persistent H2 file database for IDE
-     * JPA column resolution.
-     *
-     * <p>Uses Hibernate's {@link SchemaManagementTool} SPI to generate DDL from the
-     * session's {@link Metadata}, then executes the DDL against a new H2 file database
-     * at {@code outputDir/<schema-name>}.
-     *
-     * @param outputDir the directory to write the H2 database files into
-     */
-    public void exportSchema(@NotNull Path outputDir) {
-        String baseName = this.config.getSchema();
-        outputDir.toFile().mkdirs();
-
-        Path sqlFile = outputDir.resolve(baseName + "-schema.sql");
-
-        try {
-            Files.deleteIfExists(sqlFile);
-        } catch (IOException e) {
-            throw new JpaException(e);
-        }
-
-        SchemaManagementTool tool = this.getServiceRegistry().getService(SchemaManagementTool.class);
-
-        if (tool == null)
-            return;
-
-        ConcurrentMap<String, Object> configValues = Concurrent.newMap(this.properties);
-
-        ExecutionOptions executionOptions = new ExecutionOptions() {
-            @Override
-            public Map<String, Object> getConfigurationValues() {
-                return configValues;
-            }
-
-            @Override
-            public boolean shouldManageNamespaces() {
-                return false;
-            }
-
-            @Override
-            public ExceptionHandler getExceptionHandler() {
-                return ExceptionHandlerHaltImpl.INSTANCE;
-            }
-        };
-
-        SourceDescriptor sourceDescriptor = new SourceDescriptor() {
-            @Override
-            public SourceType getSourceType() {
-                return SourceType.METADATA;
-            }
-
-            @Override
-            public @Nullable ScriptSourceInput getScriptSourceInput() {
-                return null;
-            }
-        };
-
-        ScriptTargetOutput scriptOutput = new ScriptTargetOutputToFile(sqlFile.toFile(), "UTF-8");
-        TargetDescriptor targetDescriptor = new TargetDescriptor() {
-            @Override
-            public @NotNull EnumSet<TargetType> getTargetTypes() {
-                return EnumSet.of(TargetType.SCRIPT);
-            }
-
-            @Override
-            public ScriptTargetOutput getScriptTargetOutput() {
-                return scriptOutput;
-            }
-        };
-
-        tool.getSchemaCreator(configValues).doCreation(
-            this.metadata,
-            executionOptions,
-            ContributableMatcher.ALL,
-            sourceDescriptor,
-            targetDescriptor
-        );
-
-        // Create persistent H2 file database from the DDL
-        Path dbFile = outputDir.resolve(baseName);
-        String jdbcUrl = "jdbc:h2:file:" + dbFile;
-
-        try {
-            Files.deleteIfExists(Path.of(dbFile + ".mv.db"));
-            Files.deleteIfExists(Path.of(dbFile + ".trace.db"));
-        } catch (IOException e) {
-            throw new JpaException(e);
-        }
-
-        try (
-            Connection conn = DriverManager.getConnection(jdbcUrl, "sa", "");
-            Statement stmt = conn.createStatement()
-        ) {
-            String ddl = Files.readString(sqlFile);
-
-            for (String sql : ddl.split(";")) {
-                sql = sql.trim();
-
-                if (!sql.isEmpty())
-                    stmt.execute(sql);
-            }
-        } catch (SQLException | IOException e) {
-            throw new JpaException(e);
-        }
-
-        // DDL file was only needed to seed the H2 file database
-        try {
-            Files.deleteIfExists(sqlFile);
-        } catch (IOException e) {
-            throw new JpaException(e);
-        }
-
-    }
-
-    /**
      * Retrieves the {@link Repository} for the given model class, searching by exact key
      * match first, then by assignability.
      *
@@ -766,31 +651,31 @@ public final class JpaSession {
     }
 
     /**
-     * Opens a new Hibernate {@link Session} from the underlying {@link SessionFactory}.
+     * The Hibernate session factory, for the paths that cannot run without one.
      *
-     * @return a freshly opened session
+     * @return the session factory this session was opened with
+     * @throws JpaException if the session holds no driver
      */
-    public @NotNull Session openSession() {
-        return this.sessionFactory.openSession();
+    private @NotNull SessionFactory factory() {
+        if (this.sessionFactory == null)
+            throw new JpaException("Session holds no driver, so there is no Hibernate access");
+
+        return this.sessionFactory;
     }
 
     /**
-     * Opens a Hibernate {@link Session} that is NOT auto-closed by this class. Caller assumes
-     * full ownership of the session lifecycle and MUST close it - typically by handing it to
-     * a {@link LifecycleSingleStream} which auto-closes
-     * inside its terminal operations.
+     * Opens a new Hibernate {@link Session} from the underlying {@link SessionFactory}.
      *
-     * <p>Use this when the result of a session-bound call (e.g. a lazy {@code getResultStream()})
-     * outlives the calling method - the standard {@link #with(java.util.function.Function)}
-     * pattern would close the session before any terminal consumed the stream. For all other
-     * use cases prefer {@link #with(java.util.function.Consumer)} or
-     * {@link #with(java.util.function.Function)} which auto-close.</p>
+     * <p>The caller owns the returned session and must close it. This is the escape hatch a type
+     * outside {@link RepositoryFactory#getModels()} is reached through - a registered type answers
+     * from its held generation instead, and a write to one goes through
+     * {@link #write(WriteRequest)}.
      *
-     * @return a freshly opened session whose close is the caller's responsibility
-     * @see JpaRepository#stream(Session)
+     * @return a freshly opened session
+     * @throws JpaException if the session holds no driver
      */
-    public @NotNull Session openScopedSession() {
-        return this.sessionFactory.openSession();
+    public @NotNull Session openSession() {
+        return this.factory().openSession();
     }
 
     /**
@@ -829,9 +714,9 @@ public final class JpaSession {
     /**
      * Performs an orderly shutdown of this session.
      *
-     * <p>Marks the session as inactive, clears all repositories, shuts down the internal
-     * {@link Scheduler}, closes the {@link SessionFactory} (which drops the schema for
-     * embedded drivers), destroys the {@link StandardServiceRegistry}, and removes all
+     * <p>Marks the session as inactive, clears all repositories and shuts down the internal
+     * {@link Scheduler}. With a driver it then closes the {@link SessionFactory} (which drops the
+     * schema for embedded drivers), destroys the {@link StandardServiceRegistry}, and removes all
      * JCache regions created during construction.</p>
      *
      * <p>After shutdown, {@link #getRepository(Class)} and {@link #hasRepository(Class)}
@@ -841,6 +726,10 @@ public final class JpaSession {
         this.active = false;
         this.repositories.clear();
         this.scheduler.shutdown();
+
+        if (this.sessionFactory == null)
+            return;
+
         this.sessionFactory.close();
         StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
 
