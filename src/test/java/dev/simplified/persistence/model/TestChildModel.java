@@ -3,7 +3,6 @@ package dev.simplified.persistence.model;
 import dev.simplified.annotations.EqualsAndHashCode;
 import dev.simplified.annotations.Getter;
 import dev.simplified.annotations.Setter;
-import dev.simplified.persistence.CacheExpiry;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.Cacheable;
 import jakarta.persistence.Column;
@@ -15,13 +14,10 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.Cache;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 
-import java.util.concurrent.TimeUnit;
-
 @Entity
 @Cacheable
 @Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
 @Table(name = "test_child")
-@CacheExpiry(value = 2, length = TimeUnit.SECONDS)
 @Getter
 @Setter
 @EqualsAndHashCode(of = "id", identity = EqualsAndHashCode.Identity.INSTANCE_OF)

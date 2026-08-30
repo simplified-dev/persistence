@@ -211,13 +211,14 @@ public final class JpaSession {
     }
 
     /**
-     * Creates a JCache configuration for the given entity type with TTL from {@link CacheExpiry}
-     * or the config default, multiplied by {@link #CACHE_TTL_MULTIPLIER} as a safety net.
+     * Creates a JCache configuration for the given entity type with TTL from the type's
+     * {@link Hydration} cadence or the config default, multiplied by
+     * {@link #CACHE_TTL_MULTIPLIER} as a safety net.
      */
     private @NotNull Class<JpaModel> buildCacheConfiguration(@NotNull Class<JpaModel> type) {
-        CacheExpiry cacheExpiry = type.getAnnotation(CacheExpiry.class);
-        long expiryMs = cacheExpiry != null
-            ? cacheExpiry.length().toMillis(cacheExpiry.value())
+        Hydration hydration = type.getAnnotation(Hydration.class);
+        long expiryMs = hydration != null && hydration.every() > 0
+            ? hydration.unit().toMillis(hydration.every())
             : this.config.getDefaultCacheExpiryMs();
 
         long jcacheTtlMs = expiryMs <= 0 ? 0 : expiryMs * CACHE_TTL_MULTIPLIER;

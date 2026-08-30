@@ -353,7 +353,7 @@ public final class JpaConfig {
         }
 
         /**
-         * Sets the default JCache TTL in milliseconds for entity types without a {@link CacheExpiry} annotation.
+         * Sets the default JCache TTL in milliseconds for entity types declaring no {@link Hydration} cadence.
          */
         public Builder withDefaultCacheExpiryMs(long defaultCacheExpiryMs) {
             this.defaultCacheExpiryMs = defaultCacheExpiryMs;

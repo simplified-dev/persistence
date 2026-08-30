@@ -66,16 +66,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final boolean hasLinks;
 
     /**
-     * The {@link CacheExpiry} annotation from the entity class, or {@link CacheExpiry#DEFAULT}.
-     */
-    private final @NotNull CacheExpiry cacheExpiry;
-
-    /**
-     * The refresh interval derived from {@link #cacheExpiry}.
-     */
-    private final @NotNull Duration cacheDuration;
-
-    /**
      * How long to wait between rebuilds, or {@link Duration#ZERO} to hydrate once.
      */
     private final @NotNull Duration hydrationInterval;
@@ -131,8 +121,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
         this.type = type;
         this.source = source;
         this.hasLinks = links(type).notEmpty();
-        this.cacheExpiry = Optional.ofNullable(type.getAnnotation(CacheExpiry.class)).orElse(CacheExpiry.DEFAULT);
-        this.cacheDuration = Duration.of(this.cacheExpiry.value(), this.cacheExpiry.length().toChronoUnit());
 
         Hydration hydration = type.getAnnotation(Hydration.class);
         this.blocking = hydration == null || hydration.blocking();
