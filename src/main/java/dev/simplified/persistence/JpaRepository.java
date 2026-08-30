@@ -6,6 +6,7 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
+import dev.simplified.collection.query.Sortable;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
@@ -29,7 +30,7 @@ import java.util.Optional;
  * {@link Source}.
  *
  * <p>A read answers from the held generation and performs no I/O, so every finder inherited from
- * {@link dev.simplified.collection.query.Sortable} is a scan or an index probe over rows already in
+ * {@link Sortable} is a scan or an index probe over rows already in
  * memory. Where those rows came from - a JSON document, a GitHub corpus, a database table - is the
  * source's business and changes nothing here.
  *

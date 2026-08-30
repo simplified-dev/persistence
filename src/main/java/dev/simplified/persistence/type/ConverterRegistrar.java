@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.reflection.Reflection;
 import jakarta.persistence.AttributeConverter;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Converter;
 import org.hibernate.boot.MetadataBuilder;
 import org.jetbrains.annotations.NotNull;
@@ -18,7 +19,7 @@ import java.util.Set;
  * <p>
  * Hibernate reads the {@link Converter#autoApply()} flag natively - converters marked
  * {@code autoApply = true} are applied globally to all matching-type fields, while others
- * require explicit {@link jakarta.persistence.Convert @Convert} references.
+ * require explicit {@link Convert @Convert} references.
  */
 public final class ConverterRegistrar implements TypeRegistrar {
 

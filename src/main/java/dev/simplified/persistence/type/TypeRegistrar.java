@@ -6,6 +6,7 @@ import dev.simplified.persistence.JpaSession;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import jakarta.persistence.Convert;
+import jakarta.persistence.Transient;
 import org.hibernate.boot.Metadata;
 import org.hibernate.boot.MetadataBuilder;
 import org.hibernate.mapping.BasicValue;
@@ -86,7 +87,7 @@ public interface TypeRegistrar {
 
     /**
      * Returns {@code true} if the given field is a persistent Hibernate-mapped column
-     * (not static, not {@code transient}, not {@link jakarta.persistence.Transient @Transient}).
+     * (not static, not {@code transient}, not {@link Transient @Transient}).
      *
      * @param accessor the field to check
      * @return {@code true} if the field should be mapped by Hibernate

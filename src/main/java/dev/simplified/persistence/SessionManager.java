@@ -3,6 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.store.WriteRequest;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -135,6 +136,32 @@ public final class SessionManager {
         }
 
         throw new JpaException("Repository cannot be retrieved");
+    }
+
+    /**
+     * Applies one write through the session that holds the type, and rebuilds that type.
+     *
+     * <p>The symmetric member to {@link #getRepository(Class)}: a consumer that reaches a
+     * repository through this registry writes through it too, rather than having to hold on to
+     * whichever session it connected.
+     *
+     * @param request the write to apply
+     * @param <M> the entity type
+     * @throws JpaException if no active session holds the type, or its source holds no write
+     *         instruction
+     */
+    public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
+        if (!this.isActive())
+            throw new JpaException("There are no active sessions");
+
+        for (JpaSession session : this.sessions) {
+            if (session.hasRepository(request.type())) {
+                session.write(request);
+                return;
+            }
+        }
+
+        throw new JpaException("No session holds '%s' to write it", request.type().getName());
     }
 
     /**
