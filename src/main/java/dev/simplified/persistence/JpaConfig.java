@@ -6,7 +6,7 @@ import dev.simplified.annotations.RequiredArgsConstructor;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.driver.MariaDbDriver;
-import dev.simplified.persistence.store.EntityStore;
+import dev.simplified.persistence.store.Source;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.builder.BuildFlag;
 import dev.simplified.util.Logging;
@@ -25,7 +25,7 @@ import java.util.UUID;
  * <p>Holds connection details, cache settings, and {@link GsonSettings} configuration.
  * The {@link JpaDriver} controls the database connection mode (external RDBMS,
  * embedded H2, etc.), while data-source concerns (JSON vs SQL) and entity discovery
- * are expressed through the {@link RepositoryFactory} and its {@link EntityStore}
+ * are expressed through the {@link RepositoryFactory} and its {@link Source}
  * registrations.</p>
  *
  * <p>Use {@link #commonSql()} for a ready-made MariaDB preset, {@link #common(JpaDriver, String)}
@@ -413,7 +413,7 @@ public final class JpaConfig {
                 this.defaultCacheExpiryMs,
                 this.cacheProvider,
                 this.gsonSettings,
-                this.repositoryFactory != null ? this.repositoryFactory : RepositoryFactory.builder().build()
+                this.repositoryFactory != null ? this.repositoryFactory : RepositoryFactory.of(JpaModel.class)
             );
 
             jpaConfig.setLogLevel(this.logLevel);

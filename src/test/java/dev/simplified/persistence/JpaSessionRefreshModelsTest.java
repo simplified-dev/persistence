@@ -6,7 +6,8 @@ import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
-import dev.simplified.persistence.store.EntityStore;
+import dev.simplified.persistence.store.Source;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * for the specified model subset while skipping unregistered or unrelated models.
  *
  * <p>Each test wires a fresh session using two test models ({@link TestParentModel}
- * and {@link TestChildModel}) backed by counting {@link EntityStore} lambdas so the test
+ * and {@link TestChildModel}) backed by one counting {@link Source} so the test
  * can observe exactly how many times each model's source was reloaded. The counting
  * sources return a deterministic one-entity list on every call so the downstream
  * stale-removal and evict phases exercise non-trivial code paths.
@@ -48,32 +49,36 @@ class JpaSessionRefreshModelsTest {
         this.parentSourceCalls = new AtomicInteger();
         this.childSourceCalls = new AtomicInteger();
 
-        EntityStore<TestParentModel> parentSource = repo -> {
-            this.parentSourceCalls.incrementAndGet();
-            TestParentModel parent = new TestParentModel();
-            parent.setId(1);
-            parent.setName("parent1");
-            return Concurrent.newList(parent);
-        };
+        Source source = new Source() {
 
-        EntityStore<TestChildModel> childSource = repo -> {
-            this.childSourceCalls.incrementAndGet();
-            TestChildModel child = new TestChildModel();
-            child.setId(10);
-            child.setValue("child1");
-            // Parent is resolved via FK on the next query; leaving it null here matches the
-            // JSON-seeded flow where the Source does not pre-wire ManyToOne references.
-            return Concurrent.newList(child);
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
+                if (type == TestParentModel.class) {
+                    JpaSessionRefreshModelsTest.this.parentSourceCalls.incrementAndGet();
+                    TestParentModel parent = new TestParentModel();
+                    parent.setId(1);
+                    parent.setName("parent1");
+                    return (ConcurrentList<T>) Concurrent.newList(parent);
+                }
+
+                if (type == TestChildModel.class) {
+                    JpaSessionRefreshModelsTest.this.childSourceCalls.incrementAndGet();
+                    TestChildModel child = new TestChildModel();
+                    child.setId(10);
+                    child.setValue("child1");
+                    // Parent is resolved via FK on the next query; leaving it null here matches the
+                    // JSON-seeded flow where the source does not pre-wire ManyToOne references.
+                    return (ConcurrentList<T>) Concurrent.newList(child);
+                }
+
+                return Concurrent.newUnmodifiableList();
+            }
+
         };
 
         JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "refresh_models_test")
-            .withRepositoryFactory(
-                RepositoryFactory.builder()
-                    .withPackageOf(TestParentModel.class)
-                    .with(TestParentModel.class, parentSource)
-                    .with(TestChildModel.class, childSource)
-                    .build()
-            )
+            .withRepositoryFactory(RepositoryFactory.of(TestParentModel.class, source))
             .build();
 
         this.session = this.sessionManager.connect(config);
@@ -155,25 +160,29 @@ class JpaSessionRefreshModelsTest {
         AtomicInteger parentCalls = new AtomicInteger();
         java.util.concurrent.atomic.AtomicBoolean explode = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        EntityStore<TestParentModel> togglingSource = repo -> {
-            parentCalls.incrementAndGet();
+        Source togglingSource = new Source() {
 
-            if (explode.get())
-                throw new IllegalStateException("boom");
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
+                if (type != TestParentModel.class)
+                    return Concurrent.newUnmodifiableList();
 
-            TestParentModel parent = new TestParentModel();
-            parent.setId(1);
-            parent.setName("parent1");
-            return Concurrent.newList(parent);
+                parentCalls.incrementAndGet();
+
+                if (explode.get())
+                    throw new IllegalStateException("boom");
+
+                TestParentModel parent = new TestParentModel();
+                parent.setId(1);
+                parent.setName("parent1");
+                return (ConcurrentList<T>) Concurrent.newList(parent);
+            }
+
         };
 
         JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "refresh_models_failing_test")
-            .withRepositoryFactory(
-                RepositoryFactory.builder()
-                    .withPackageOf(TestParentModel.class)
-                    .with(TestParentModel.class, togglingSource)
-                    .build()
-            )
+            .withRepositoryFactory(RepositoryFactory.of(TestParentModel.class, togglingSource))
             .build();
 
         this.session = this.sessionManager.connect(config);

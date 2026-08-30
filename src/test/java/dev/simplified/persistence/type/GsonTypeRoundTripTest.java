@@ -64,9 +64,7 @@ class GsonTypeRoundTripTest {
             .isUsingQueryCache(false)
             .withDefaultCacheExpiryMs(0)
             .withRepositoryFactory(
-                RepositoryFactory.builder()
-                    .withPackageOf(GsonFixtureModel.class)
-                    .build()
+                RepositoryFactory.of(GsonFixtureModel.class)
             )
             .build();
 
@@ -541,9 +539,7 @@ class GsonTypeRoundTripTest {
                 .isUsingQueryCache(false)
                 .withDefaultCacheExpiryMs(0)
                 .withRepositoryFactory(
-                    RepositoryFactory.builder()
-                        .withPackageOf(FloatingOptionalModel.class)
-                        .build()
+                    RepositoryFactory.of(FloatingOptionalModel.class)
                 )
                 .build();
 

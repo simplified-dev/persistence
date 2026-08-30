@@ -35,9 +35,7 @@ class ExternalAssetStateTest {
         this.sessionManager = new SessionManager();
         JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "external_asset_state_test")
             .withRepositoryFactory(
-                RepositoryFactory.builder()
-                    .withPackageOf(ExternalAssetState.class)
-                    .build()
+                RepositoryFactory.of(ExternalAssetState.class)
             )
             .build();
         this.session = this.sessionManager.connect(config);

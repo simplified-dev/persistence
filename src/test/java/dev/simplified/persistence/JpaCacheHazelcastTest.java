@@ -66,9 +66,7 @@ class JpaCacheHazelcastTest {
             .withDefaultCacheExpiryMs(2000)
             .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
             .withRepositoryFactory(
-                RepositoryFactory.builder()
-                    .withPackageOf(TestParentModel.class)
-                    .build()
+                RepositoryFactory.of(TestParentModel.class)
             )
             .build();
 
@@ -202,7 +200,7 @@ class JpaCacheHazelcastTest {
         parent.setId(1);
         parent.setName("parent1_updated");
 
-        assertDoesNotThrow(() -> parentRepo.persistToDatabase(repo -> Concurrent.newList(parent)),
+        assertDoesNotThrow(() -> parentRepo.persistToDatabase(Concurrent.newList(parent)),
             "Upsert persist should not cause FK violation on Hazelcast L2");
 
         // Verify child's parent reference is intact
@@ -227,14 +225,14 @@ class JpaCacheHazelcastTest {
         TestParentModel keptParent = new TestParentModel();
         keptParent.setId(1);
         keptParent.setName("parent1");
-        parentRepo.persistToDatabase(repo -> Concurrent.newList(keptParent));
+        parentRepo.persistToDatabase(Concurrent.newList(keptParent));
 
         // Re-persist subset: keep child1, mark child2 as stale
         TestChildModel keptChild = new TestChildModel();
         keptChild.setId(10);
         keptChild.setParent(keptParent);
         keptChild.setValue("child1");
-        childRepo.persistToDatabase(repo -> Concurrent.newList(keptChild));
+        childRepo.persistToDatabase(Concurrent.newList(keptChild));
 
         // Remove stale in FK-safe order: children first, then parents
         assertDoesNotThrow(() -> {

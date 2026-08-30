@@ -8,9 +8,9 @@ import org.jetbrains.annotations.NotNull;
  * a {@link ManifestIndex.Entry}.
  *
  * <p>Implementations read one path at a time and hold no manifest of their own, so an
- * {@link EntityStore} that loads from documents pairs a fetcher with whatever names the paths.
+ * {@link Source} that loads from documents pairs a fetcher with whatever names the paths.
  *
- * @see EntityStore
+ * @see Source
  * @see ManifestIndex
  */
 @FunctionalInterface

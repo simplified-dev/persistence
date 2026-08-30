@@ -11,7 +11,7 @@ import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.store.EntityStore;
+import dev.simplified.persistence.store.Source;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
@@ -38,21 +38,19 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
- * Default {@link Repository} implementation backed by an optional {@link EntityStore}
- * with optional per-entity post-query processing via {@link #streamPeek}.
+ * Default {@link Repository} implementation reading its rows from a {@link Source}.
  *
- * <p>On construction the repository performs an immediate data load (via the store if
- * present, or a no-op for SQL-managed entities). Cache expiry is handled by JCache TTL
- * per entity type, derived from the {@link CacheExpiry} annotation; when entries expire,
- * Hibernate transparently re-queries the database on the next access.</p>
+ * <p>On construction the repository performs an immediate data load. Cache expiry is handled
+ * by JCache TTL per entity type, derived from the {@link CacheExpiry} annotation; when entries
+ * expire, Hibernate transparently re-queries the database on the next access.</p>
  *
  * <p>Each query executed through {@link #stream()} or {@link #stream(Session)} runs a
- * Hibernate criteria query against the L2-cached data, resolves any {@link ForeignIds}
- * transient fields, and applies the optional {@link #streamPeek} consumer.</p>
+ * Hibernate criteria query against the L2-cached data and resolves any {@link ForeignIds}
+ * transient fields.</p>
  *
  * @param <T> the entity type, which must implement {@link JpaModel}
  * @see Repository
- * @see EntityStore
+ * @see Source
  * @see JpaSession
  */
 @Getter
@@ -69,14 +67,9 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final @NotNull Class<T> type;
 
     /**
-     * The store rows are loaded from on each refresh cycle, or {@code empty} for SQL-managed entities.
+     * Where this type's rows come from on each refresh cycle.
      */
-    private final @NotNull Optional<EntityStore<T>> store;
-
-    /**
-     * Optional consumer applied to each entity via {@link SingleStream#peek} on every query.
-     */
-    private final @NotNull Optional<Consumer<T>> streamPeek;
+    private final @NotNull Source source;
 
     /**
      * {@code true} if the entity class has any {@link ForeignIds}-annotated fields.
@@ -116,21 +109,18 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private volatile @Nullable ConcurrentList<T> lastLoadedEntities;
 
     /**
-     * Creates a repository with an optional store and stream peek.
+     * Creates a repository reading from the given source.
      *
-     * <p>Performs an immediate data load via the store (if present) and records the initial load timing.
+     * <p>Performs an immediate data load and records the initial load timing.
      *
      * @param session the owning JPA session
      * @param type the entity class
-     * @param store the store rows are loaded from on refresh, or {@code null} for SQL-managed entities
-     * @param streamPeek optional per-entity consumer applied on every {@link #stream()} call,
-     *                   useful for re-attaching transient fields
+     * @param source where this type's rows come from on refresh
      */
-    JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @Nullable EntityStore<T> store, @Nullable Consumer<T> streamPeek) {
+    JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @NotNull Source source) {
         this.session = session;
         this.type = type;
-        this.store = Optional.ofNullable(store);
-        this.streamPeek = Optional.ofNullable(streamPeek);
+        this.source = source;
 
         // Cache @Id and @ForeignIds
         ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(type).getFields();
@@ -161,9 +151,9 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
     /**
      * Executes a Hibernate criteria query as a lazy {@code getResultStream()} within the
-     * given session, attaches an in-memory {@link ForeignIds} resolver and the optional
-     * {@link #streamPeek} as {@code peek()} steps, and returns a {@link LifecycleSingleStream}
-     * that owns the session and closes it on the first terminal operation.
+     * given session, attaches an in-memory {@link ForeignIds} resolver as a {@code peek()} step,
+     * and returns a {@link LifecycleSingleStream} that owns the session and closes it on the
+     * first terminal operation.
      *
      * <p>The session passed in MUST be a fresh, caller-owned scoped session - typically opened
      * via {@link JpaSession#openScopedSession()}. The returned stream takes ownership of the
@@ -199,9 +189,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
             if (this.hasForeignIds())
                 jdkStream = jdkStream.peek(entity -> this.resolveForeignIdsForOne(entity, fkLookups));
 
-            if (this.streamPeek.isPresent())
-                jdkStream = jdkStream.peek(this.streamPeek.get());
-
             return LifecycleSingleStream.of(jdkStream, session);
         } catch (Exception exception) {
             throw new JpaException(exception);
@@ -224,7 +211,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
         Instant startTime = Instant.now();
 
         try {
-            this.store.ifPresent(this::persistToDatabase);
+            this.persistToDatabase();
 
             if (evictWarmCache)
                 this.evict();
@@ -246,10 +233,22 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * properties whose relationship references are null after JSON deserialization. Stale rows
      * are cleaned up separately by {@link #removeStaleEntities()} in reverse topological order.
      *
-     * @param store the store to load from
      */
-    void persistToDatabase(@NotNull EntityStore<T> store) throws JpaException {
-        ConcurrentList<T> entities = store.load(this);
+    void persistToDatabase() throws JpaException {
+        this.persistToDatabase(this.source.read(this.type));
+    }
+
+    /**
+     * Upserts the given entities into the database via a {@link StatelessSession},
+     * storing them for subsequent {@link #removeStaleEntities()} processing.
+     *
+     * @param entities the rows to write
+     * @throws JpaException if the write fails
+     */
+    void persistToDatabase(@NotNull ConcurrentList<T> entities) throws JpaException {
+        if (entities.isEmpty())
+            return;
+
         this.lastLoadedEntities = entities;
 
         entities.forEach(entity -> {

@@ -9,7 +9,7 @@ import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.store.EntityStore;
+import dev.simplified.persistence.store.Source;
 import dev.simplified.persistence.type.TypeRegistrar;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
@@ -436,8 +436,8 @@ public final class JpaSession {
             this.repositoriesCached = true;
             Instant startTime = Instant.now();
 
-            for (Class<? extends JpaModel> model : this.models)
-                this.repositories.put(model, this.config.getRepositoryFactory().create(this, model));
+            for (Class<JpaModel> model : this.models)
+                this.repositories.put(model, this.createRepository(model));
 
             this.repositoryCache = Stopwatch.of(startTime);
 
@@ -456,12 +456,23 @@ public final class JpaSession {
     }
 
     /**
+     * Creates the repository for one entity type, reading its origin off the configured factory.
+     *
+     * @param type the entity class
+     * @param <T> the entity type
+     * @return the repository for that type
+     */
+    private <T extends JpaModel> @NotNull JpaRepository<T> createRepository(@NotNull Class<T> type) {
+        return new JpaRepository<>(this, type, this.config.getRepositoryFactory().sourceFor(type));
+    }
+
+    /**
      * Performs a coordinated 3-phase refresh across all due entity types.
      *
      * <p><b>Phase 1</b> - Update data stores in topological order (parents first):
      * calls {@link JpaRepository#refresh(boolean)} which delegates to the entity's
-     * {@link EntityStore}. Document stores merge fresh data into the DB; entities without
-     * a store (SQL-managed) are no-ops.</p>
+     * {@link Source}. Document sources merge fresh data into the DB; a type whose rows the
+     * database authors reads nothing.</p>
      *
      * <p><b>Phase 2</b> - Remove stale entities in reverse topological order (children first):
      * calls {@link JpaRepository#removeStaleEntities()} to delete DB rows whose IDs

@@ -22,7 +22,7 @@ import org.jetbrains.annotations.Nullable;
  * explicit {@link SerializedName}. Instances are typically produced by
  * {@code gson.fromJson(reader, ManifestIndex.class)}.
  *
- * @see EntityStore
+ * @see Source
  * @see FileFetcher
  */
 @Getter

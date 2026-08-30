@@ -1,11 +1,11 @@
 package dev.simplified.persistence;
 
-import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.query.IndexCache;
 import dev.simplified.collection.query.Sortable;
 import dev.simplified.collection.tuple.single.SingleStream;
+import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.util.time.Stopwatch;
 import org.jetbrains.annotations.NotNull;
 
