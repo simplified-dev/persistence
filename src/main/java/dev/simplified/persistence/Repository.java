@@ -3,6 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.query.IndexCache;
 import dev.simplified.collection.query.Sortable;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.util.time.Stopwatch;
@@ -66,6 +67,32 @@ public interface Repository<T extends JpaModel> extends Sortable<T> {
      */
     default @NotNull ConcurrentList<T> findAll() throws JpaException {
         return this.stream().collect(Concurrent.toUnmodifiableList());
+    }
+
+    /**
+     * The rows this repository holds, as one generation.
+     *
+     * <p>Every finder inherited from {@link Sortable} reads this, so an implementation holding its rows
+     * answers all of them without a query.
+     *
+     * @return the held rows
+     * @throws JpaException if the rows cannot be produced
+     */
+    default @NotNull ConcurrentList<T> getRows() throws JpaException {
+        return this.stream().collect(Concurrent.toUnmodifiableList());
+    }
+
+    /**
+     * The point this repository's generation has reached in its hydration lifecycle.
+     */
+    default @NotNull HydrationState getState() {
+        return HydrationState.CURRENT;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    default @NotNull IndexCache<T> indexes() {
+        return this.getRows().indexes();
     }
 
 }
