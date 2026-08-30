@@ -1,7 +1,7 @@
 package dev.simplified.persistence.store;
 
 import dev.simplified.collection.Concurrent;
-import dev.simplified.persistence.model.ContractRow;
+import dev.simplified.persistence.unmapped.ContractRow;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

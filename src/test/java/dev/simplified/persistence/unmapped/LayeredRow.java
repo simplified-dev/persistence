@@ -1,4 +1,4 @@
-package dev.simplified.persistence.model;
+package dev.simplified.persistence.unmapped;
 
 import dev.simplified.annotations.EqualsAndHashCode;
 import dev.simplified.annotations.Getter;

@@ -4,12 +4,12 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Type;
-import java.util.function.Supplier;
 
 /**
  * Where a type's rows come from, whether that is a relational table, a JSON document or anything else.
@@ -49,23 +49,33 @@ public interface Source {
     }
 
     /**
-     * Returns a source reading each type out of the layers a catalogue names for it.
+     * Returns a source reading each type out of the layers an origin names for it.
      *
-     * <p>A type names its document through the table name it already declares, the catalogue names
-     * that document's layers, and the layers merge by key with the later one winning. That is one
-     * mechanism for a generated file, its companion overrides and a local overlay, rather than three.
+     * <p>A type names its document through the table name it already declares, the origin names that
+     * document's layers, and the layers merge by key with the later one winning. That is one mechanism
+     * for a generated file, its companion overrides and a local overlay, rather than three.
      *
-     * @param manifest the catalogue of the origin's documents
-     * @param fetcher reads one layer's bytes
+     * @param origin the tree of files the layers are read out of
      * @param gson the instance documents are parsed with
-     * @return a source reading documents through the catalogue
+     * @return a source reading documents off that origin
      */
-    static @NotNull Source documents(
-        @NotNull Supplier<ManifestIndex> manifest,
-        @NotNull FileFetcher fetcher,
-        @NotNull Gson gson
-    ) {
-        return new Documents(manifest, fetcher, gson);
+    static @NotNull Source documents(@NotNull DocumentOrigin origin, @NotNull Gson gson) {
+        return new Documents(origin, gson);
+    }
+
+    /**
+     * Returns a source reading and writing each type through an origin a caller may update.
+     *
+     * <p>The write instruction is the origin's, so it is the origin's type that carries it. Handing
+     * this a read-only origin does not compile, which is what keeps a caller holding no instruction
+     * from building a source that claims one.
+     *
+     * @param origin the tree of files the layers are read out of and written back to
+     * @param gson the instance documents are parsed and serialized with
+     * @return a source reading and writing documents off that origin
+     */
+    static @NotNull Writable documents(@NotNull DocumentOrigin.Writable origin, @NotNull Gson gson) {
+        return new WritableDocuments(origin, gson);
     }
 
     /**
@@ -86,43 +96,108 @@ public interface Source {
     }
 
     /**
-     * A source reading each type out of the layers a {@link ManifestIndex} names for it.
+     * A source reading each type out of the layers a {@link DocumentOrigin} names for it.
      */
-    final class Documents implements Source {
+    class Documents implements Source {
 
-        private final @NotNull Supplier<ManifestIndex> manifest;
-        private final @NotNull FileFetcher fetcher;
-        private final @NotNull Gson gson;
+        final @NotNull DocumentOrigin origin;
+        final @NotNull Gson gson;
 
-        private Documents(@NotNull Supplier<ManifestIndex> manifest, @NotNull FileFetcher fetcher, @NotNull Gson gson) {
-            this.manifest = manifest;
-            this.fetcher = fetcher;
+        Documents(@NotNull DocumentOrigin origin, @NotNull Gson gson) {
+            this.origin = origin;
             this.gson = gson;
         }
 
         /** {@inheritDoc} */
         @Override
         public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException {
+            return Concurrent.newUnmodifiableList(this.merge(type).values());
+        }
+
+        /**
+         * The paths a type's document is made of, in merge order.
+         *
+         * @param type the entity class
+         * @return the paths, never empty
+         * @throws JpaException if the origin publishes no document under the type's name
+         */
+        final @NotNull ConcurrentList<String> layers(@NotNull Class<? extends JpaModel> type) throws JpaException {
             String name = JpaModel.documentOf(type);
-            ConcurrentList<ManifestIndex.Layer> layers = this.manifest.get().layersOf(name);
+            ConcurrentList<String> layers = this.origin.layersOf(name);
 
             if (layers.isEmpty())
                 throw new JpaException("The origin names no document '%s' for '%s'", name, type.getName());
 
+            return layers;
+        }
+
+        /**
+         * Reads every layer of a type's document and keys the result.
+         *
+         * <p>Insertion order is the first layer's order, and a later layer repeating a key replaces
+         * that row in place rather than appending a second one. That is what makes a companion file
+         * an override of the generated one rather than a second copy of it.
+         *
+         * @param type the entity class
+         * @param <T> the entity type
+         * @return the merged rows, keyed by their id
+         * @throws JpaException if a layer cannot be read
+         */
+        final <T extends JpaModel> @NotNull ConcurrentMap<String, T> merge(@NotNull Class<T> type) throws JpaException {
             Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
             ConcurrentList<T> read = Concurrent.newList();
 
-            for (ManifestIndex.Layer layer : layers) {
-                ConcurrentList<T> rows = this.gson.fromJson(this.fetcher.fetchFile(layer.path()), listType);
+            for (String path : this.layers(type)) {
+                ConcurrentList<T> rows = this.gson.fromJson(this.origin.read(path), listType);
 
                 if (rows != null)
                     read.addAll(rows);
             }
 
-            // Insertion order is the first layer's order, and a later layer repeating a key replaces
-            // that row in place rather than appending a second one. That is what makes a companion
-            // file an override of the generated one rather than a second copy of it.
-            return Concurrent.newUnmodifiableList(JpaModel.keyed(type, read).values());
+            return JpaModel.keyed(type, read);
+        }
+
+    }
+
+    /**
+     * A document source over an origin a caller holds instructions to update.
+     */
+    final class WritableDocuments extends Documents implements Writable {
+
+        private final @NotNull DocumentOrigin.Writable writes;
+
+        WritableDocuments(@NotNull DocumentOrigin.Writable origin, @NotNull Gson gson) {
+            super(origin, gson);
+            this.writes = origin;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * <p>A document is a whole file, so a write is: read the layers, apply the rows to the merged
+         * result, and rewrite the first layer carrying all of it. Granularity is the origin's problem
+         * rather than the caller's, and here the origin's granularity is the file.
+         */
+        @Override
+        public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
+            if (request.rows().isEmpty())
+                return;
+
+            ConcurrentMap<String, T> merged = this.merge(request.type());
+            ConcurrentMap<String, T> applied = JpaModel.keyed(request.type(), request.rows());
+
+            if (request.operation() == WriteRequest.Operation.DELETE)
+                applied.keySet().forEach(merged::remove);
+            else
+                merged.putAll(applied);
+
+            Type listType = TypeToken.getParameterized(ConcurrentList.class, request.type()).getType();
+
+            this.writes.write(
+                this.layers(request.type()).getFirst(),
+                this.gson.toJson(Concurrent.newUnmodifiableList(merged.values()), listType),
+                request.getPrecondition()
+            );
         }
 
     }

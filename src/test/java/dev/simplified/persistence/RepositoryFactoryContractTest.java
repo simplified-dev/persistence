@@ -4,10 +4,10 @@ import com.google.gson.Gson;
 import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.persistence.model.ContractRow;
-import dev.simplified.persistence.model.LayeredRow;
-import dev.simplified.persistence.store.ManifestIndex;
+import dev.simplified.persistence.store.DocumentOrigin;
 import dev.simplified.persistence.store.Source;
+import dev.simplified.persistence.unmapped.ContractRow;
+import dev.simplified.persistence.unmapped.LayeredRow;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,6 +33,23 @@ import static org.hamcrest.Matchers.sameInstance;
 class RepositoryFactoryContractTest {
 
     /**
+     * An origin publishing nothing, so a split factory has a second source that is not its first.
+     */
+    private static final @NotNull DocumentOrigin EMPTY_ORIGIN = new DocumentOrigin() {
+
+        @Override
+        public @NotNull ConcurrentList<String> layersOf(@NotNull String name) {
+            return Concurrent.newUnmodifiableList();
+        }
+
+        @Override
+        public @NotNull String read(@NotNull String path) {
+            return "[]";
+        }
+
+    };
+
+    /**
      * A factory written the way a consumer writes one: fields, an annotation, no accessors.
      */
     @Getter
@@ -55,7 +72,7 @@ class RepositoryFactoryContractTest {
     private static final class SplitFactory implements RepositoryFactory {
 
         private final @NotNull Source primary = Source.none();
-        private final @NotNull Source secondary = Source.documents(ManifestIndex::empty, path -> "[]", new Gson());
+        private final @NotNull Source secondary = Source.documents(EMPTY_ORIGIN, new Gson());
 
         @Override
         public @NotNull ConcurrentList<Class<JpaModel>> getModels() {
