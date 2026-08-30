@@ -1,7 +1,7 @@
 package dev.simplified.persistence.store;
 
 import dev.simplified.collection.Concurrent;
-import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.model.ContractRow;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -19,8 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  */
 class WriteRequestTest {
 
-    private static TestParentModel row(int id, String name) {
-        TestParentModel model = new TestParentModel();
+    private static ContractRow row(int id, String name) {
+        ContractRow model = new ContractRow();
         model.setId(id);
         model.setName(name);
         return model;
@@ -29,12 +29,12 @@ class WriteRequestTest {
     @Test
     @DisplayName("an upsert names its type, its operation and its rows")
     void upsertCarriesTypeOperationAndRows() {
-        TestParentModel first = row(1, "first");
-        TestParentModel second = row(2, "second");
+        ContractRow first = row(1, "first");
+        ContractRow second = row(2, "second");
 
-        WriteRequest<TestParentModel> request = WriteRequest.upsert(TestParentModel.class, List.of(first, second));
+        WriteRequest<ContractRow> request = WriteRequest.upsert(ContractRow.class, List.of(first, second));
 
-        assertThat(request.type(), equalTo(TestParentModel.class));
+        assertThat(request.type(), equalTo(ContractRow.class));
         assertThat(request.operation(), equalTo(WriteRequest.Operation.UPSERT));
         assertThat(request.rows(), contains(first, second));
     }
@@ -42,9 +42,9 @@ class WriteRequestTest {
     @Test
     @DisplayName("a delete carries the whole row rather than only its key")
     void deleteCarriesTheWholeRow() {
-        TestParentModel only = row(1, "first");
+        ContractRow only = row(1, "first");
 
-        WriteRequest<TestParentModel> request = WriteRequest.delete(TestParentModel.class, List.of(only));
+        WriteRequest<ContractRow> request = WriteRequest.delete(ContractRow.class, List.of(only));
 
         assertThat(request.operation(), equalTo(WriteRequest.Operation.DELETE));
         assertThat(request.rows(), contains(only));
@@ -54,7 +54,7 @@ class WriteRequestTest {
     @Test
     @DisplayName("a request applies unconditionally until a precondition is named")
     void preconditionIsAbsentUntilNamed() {
-        WriteRequest<TestParentModel> unconditional = WriteRequest.upsert(TestParentModel.class, List.of(row(1, "first")));
+        WriteRequest<ContractRow> unconditional = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));
 
         assertThat(unconditional.getPrecondition().isPresent(), is(false));
         assertThat(unconditional.getPrecondition().isEmpty(), is(true));
@@ -63,8 +63,8 @@ class WriteRequestTest {
     @Test
     @DisplayName("expecting returns a copy and leaves the original unconditional")
     void expectingCopiesRatherThanMutates() {
-        WriteRequest<TestParentModel> unconditional = WriteRequest.upsert(TestParentModel.class, List.of(row(1, "first")));
-        WriteRequest<TestParentModel> conditional = unconditional.expecting("e3ac8cc");
+        WriteRequest<ContractRow> unconditional = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));
+        WriteRequest<ContractRow> conditional = unconditional.expecting("e3ac8cc");
 
         assertThat(conditional.getPrecondition().orElseThrow(), equalTo("e3ac8cc"));
         assertThat(unconditional.getPrecondition().isEmpty(), is(true));
@@ -78,7 +78,7 @@ class WriteRequestTest {
     @Test
     @DisplayName("the rows a request carries cannot be added to afterwards")
     void rowsAreSealed() {
-        WriteRequest<TestParentModel> request = WriteRequest.upsert(TestParentModel.class, List.of(row(1, "first")));
+        WriteRequest<ContractRow> request = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));
 
         assertThrows(UnsupportedOperationException.class, () -> request.rows().add(row(2, "second")));
     }
@@ -86,7 +86,7 @@ class WriteRequestTest {
     @Test
     @DisplayName("a request over no rows is legal and empty")
     void emptyRowsAreLegal() {
-        WriteRequest<TestParentModel> request = WriteRequest.upsert(TestParentModel.class, Concurrent.newList());
+        WriteRequest<ContractRow> request = WriteRequest.upsert(ContractRow.class, Concurrent.newList());
 
         assertThat(request.rows().isEmpty(), is(true));
         assertThat(request.operation(), equalTo(WriteRequest.Operation.UPSERT));
