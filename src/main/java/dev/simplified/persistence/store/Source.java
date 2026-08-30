@@ -111,7 +111,7 @@ public interface Source {
         /** {@inheritDoc} */
         @Override
         public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException {
-            return Concurrent.newUnmodifiableList(this.merge(type).values());
+            return Concurrent.newUnmodifiableList(this.merge(type, this.layers(type)).values());
         }
 
         /**
@@ -139,15 +139,19 @@ public interface Source {
          * an override of the generated one rather than a second copy of it.
          *
          * @param type the entity class
+         * @param layers the paths to read, in merge order
          * @param <T> the entity type
          * @return the merged rows, keyed by their id
          * @throws JpaException if a layer cannot be read
          */
-        final <T extends JpaModel> @NotNull ConcurrentMap<String, T> merge(@NotNull Class<T> type) throws JpaException {
+        final <T extends JpaModel> @NotNull ConcurrentMap<String, T> merge(
+            @NotNull Class<T> type,
+            @NotNull ConcurrentList<String> layers
+        ) throws JpaException {
             Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
             ConcurrentList<T> read = Concurrent.newList();
 
-            for (String path : this.layers(type)) {
+            for (String path : layers) {
                 ConcurrentList<T> rows = this.gson.fromJson(this.origin.read(path), listType);
 
                 if (rows != null)
@@ -183,7 +187,8 @@ public interface Source {
             if (request.rows().isEmpty())
                 return;
 
-            ConcurrentMap<String, T> merged = this.merge(request.type());
+            ConcurrentList<String> layers = this.layers(request.type());
+            ConcurrentMap<String, T> merged = this.merge(request.type(), layers);
             ConcurrentMap<String, T> applied = JpaModel.keyed(request.type(), request.rows());
 
             if (request.operation() == WriteRequest.Operation.DELETE)
@@ -194,7 +199,7 @@ public interface Source {
             Type listType = TypeToken.getParameterized(ConcurrentList.class, request.type()).getType();
 
             this.writes.write(
-                this.layers(request.type()).getFirst(),
+                layers.getFirst(),
                 this.gson.toJson(Concurrent.newUnmodifiableList(merged.values()), listType),
                 request.getPrecondition()
             );
