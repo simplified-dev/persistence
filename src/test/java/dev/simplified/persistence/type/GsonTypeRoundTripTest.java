@@ -544,18 +544,11 @@ class GsonTypeRoundTripTest {
                 .build();
 
             try {
-                // The session mounts: schema export logs the failed CREATE and carries on, and no
-                // repository reads its own table on the way up. The table's absence is the
-                // observable, and it is what any later query on this type would hit.
-                JpaSession floating = manager.connect(config);
-
-                assertThrows(JpaException.class, () -> floating.with(s -> {
-                    s.doWork(connection -> {
-                        try (Statement statement = connection.createStatement()) {
-                            statement.executeQuery("SELECT \"id\" FROM \"floating_optional\"");
-                        }
-                    });
-                }));
+                // Schema export logs the failed CREATE and carries on, so the table is absent. The
+                // hydration pass then reads every registered type, which is where the absence
+                // surfaces: connecting fails rather than mounting a session whose first query on
+                // this type would have.
+                assertThrows(JpaException.class, () -> manager.connect(config));
             } finally {
                 manager.shutdown();
             }

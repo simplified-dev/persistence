@@ -1,13 +1,11 @@
 package dev.simplified.persistence;
 
-import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
 import dev.simplified.annotations.NamingStyle;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
-import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
@@ -16,13 +14,7 @@ import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
 import jakarta.persistence.Id;
-import jakarta.persistence.criteria.CriteriaBuilder;
-import jakarta.persistence.criteria.CriteriaQuery;
-import jakarta.persistence.criteria.Root;
-import org.hibernate.NonUniqueObjectException;
-import org.hibernate.Session;
 import org.hibernate.SessionFactory;
-import org.hibernate.StatelessSession;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -30,23 +22,20 @@ import java.lang.reflect.ParameterizedType;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.stream.Stream;
 
 /**
- * Default {@link Repository} implementation reading its rows from a {@link Source}.
+ * Default {@link Repository} implementation, holding one generation of rows read from a
+ * {@link Source}.
  *
- * <p>On construction the repository performs an immediate data load. Cache expiry is handled
- * by JCache TTL per entity type, derived from the {@link CacheExpiry} annotation; when entries
- * expire, Hibernate transparently re-queries the database on the next access.</p>
+ * <p>A read answers from the held generation and performs no I/O, so every finder inherited from
+ * {@link dev.simplified.collection.query.Sortable} is a scan or an index probe over rows already in
+ * memory. Where those rows came from - a JSON document, a GitHub corpus, a database table - is the
+ * source's business and changes nothing here.
  *
- * <p>Each query executed through {@link #stream()} or {@link #stream(Session)} runs a
- * Hibernate criteria query against the L2-cached data and resolves any {@link ForeignIds}
- * transient fields.</p>
+ * <p>A generation is built by {@link #hydrate()}, linked by {@link #link()} and published by one
+ * reference write, so a reader holding one never sees it change underneath them.
  *
  * @param <T> the entity type, which must implement {@link JpaModel}
  * @see Repository
@@ -57,7 +46,7 @@ import java.util.stream.Stream;
 public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
     /**
-     * The owning session providing Hibernate access and configuration.
+     * The owning session providing configuration and, for a relational origin, Hibernate access.
      */
     private final @NotNull JpaSession session;
 
@@ -67,15 +56,15 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final @NotNull Class<T> type;
 
     /**
-     * Where this type's rows come from on each refresh cycle.
+     * Where this type's rows come from.
      */
     private final @NotNull Source source;
 
     /**
-     * {@code true} if the entity class has any {@link ForeignIds}-annotated fields.
+     * {@code true} if the entity class declares any link to resolve.
      */
     @Getter(style = NamingStyle.FLUENT)
-    private final boolean hasForeignIds;
+    private final boolean hasLinks;
 
     /**
      * The {@link CacheExpiry} annotation from the entity class, or {@link CacheExpiry#DEFAULT}.
@@ -88,340 +77,272 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final @NotNull Duration cacheDuration;
 
     /**
-     * Accessor for the {@link Id}-annotated field, used by {@link #removeStaleEntities()}.
+     * How long to wait between rebuilds, or {@link Duration#ZERO} to hydrate once.
      */
-    private final @NotNull Optional<FieldAccessor<?>> idAccessor;
+    private final @NotNull Duration hydrationInterval;
 
     /**
-     * Timing snapshot of the initial data load performed during construction.
+     * How long a generation may stand before it reports {@link HydrationState#STALE}.
      */
-    private final @NotNull Stopwatch initialLoad;
+    private final @NotNull Duration stalenessThreshold;
 
     /**
-     * Timing snapshot of the most recent refresh, updated on every {@link #refresh(boolean)} call.
+     * Whether a session waits for this type's first generation before handing back repositories.
      */
-    private @NotNull Stopwatch lastRefresh;
+    @Getter(style = NamingStyle.FLUENT)
+    private final boolean blocking;
 
     /**
-     * Entities loaded by the most recent {@link #persistToDatabase} call, consumed by {@link #removeStaleEntities()}.
+     * The rows read by the most recent hydration, before links were resolved.
      */
-    @Getter(AccessLevel.NONE)
-    private volatile @Nullable ConcurrentList<T> lastLoadedEntities;
+    private volatile @NotNull ConcurrentList<T> rows = Concurrent.newUnmodifiableList();
+
+    /**
+     * The point this repository's generation has reached.
+     */
+    private volatile @NotNull HydrationState state = HydrationState.UNHYDRATED;
+
+    /**
+     * When the held generation was published.
+     */
+    private volatile @NotNull Instant hydratedAt = Instant.EPOCH;
+
+    /**
+     * Timing snapshot of the first hydration.
+     */
+    private @NotNull Stopwatch initialLoad = Stopwatch.of(Instant.now());
+
+    /**
+     * Timing snapshot of the most recent hydration.
+     */
+    private @NotNull Stopwatch lastRefresh = Stopwatch.of(Instant.now());
 
     /**
      * Creates a repository reading from the given source.
      *
-     * <p>Performs an immediate data load and records the initial load timing.
+     * <p>No I/O runs here. The generation is built when the session's hydrator reaches this type, so
+     * a repository exists and answers {@link HydrationState#UNHYDRATED} before it holds anything.
      *
      * @param session the owning JPA session
      * @param type the entity class
-     * @param source where this type's rows come from on refresh
+     * @param source where this type's rows come from
      */
     JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @NotNull Source source) {
         this.session = session;
         this.type = type;
         this.source = source;
-
-        // Cache @Id and @ForeignIds
-        ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(type).getFields();
-        this.idAccessor = fields.stream().filter(fa -> fa.hasAnnotation(Id.class)).findFirst();
-        this.hasForeignIds = fields.stream().anyMatch(fa -> fa.hasAnnotation(ForeignIds.class));
-
+        this.hasLinks = links(type).notEmpty();
         this.cacheExpiry = Optional.ofNullable(type.getAnnotation(CacheExpiry.class)).orElse(CacheExpiry.DEFAULT);
-        this.cacheDuration = Duration.of(cacheExpiry.value(), cacheExpiry.length().toChronoUnit());
-        this.refresh(true);
-        this.initialLoad = this.lastRefresh;
+        this.cacheDuration = Duration.of(this.cacheExpiry.value(), this.cacheExpiry.length().toChronoUnit());
+
+        Hydration hydration = type.getAnnotation(Hydration.class);
+        this.blocking = hydration == null || hydration.blocking();
+        this.hydrationInterval = hydration == null
+            ? Duration.ZERO
+            : Duration.of(hydration.every(), hydration.unit().toChronoUnit());
+        this.stalenessThreshold = hydration == null || hydration.stale() <= 0
+            ? this.hydrationInterval.multipliedBy(2)
+            : Duration.of(hydration.stale(), hydration.unit().toChronoUnit());
+    }
+
+    /**
+     * Whether the held generation is past its freshness window.
+     *
+     * @return {@code true} when a rebuild is overdue
+     */
+    boolean isDue() {
+        return !this.hydrationInterval.isZero()
+            && Duration.between(this.hydratedAt, Instant.now()).compareTo(this.hydrationInterval) >= 0;
+    }
+
+    /**
+     * Whether the held generation has stood past its staleness threshold.
+     *
+     * @return {@code true} when the generation should report {@link HydrationState#STALE}
+     */
+    boolean isPastStaleness() {
+        return !this.stalenessThreshold.isZero()
+            && Duration.between(this.hydratedAt, Instant.now()).compareTo(this.stalenessThreshold) >= 0;
     }
 
     /** {@inheritDoc} */
     @Override
     public @NotNull SingleStream<T> stream() throws JpaException {
-        Session scopedSession = this.getSession().openScopedSession();
-        try {
-            return this.stream(scopedSession);
-        } catch (RuntimeException ex) {
-            try {
-                scopedSession.close();
-            } catch (Exception suppressed) {
-                ex.addSuppressed(suppressed);
-            }
-            throw ex;
-        }
+        return SingleStream.of(this.getRows().stream());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public @NotNull ConcurrentList<T> getRows() throws JpaException {
+        if (this.state == HydrationState.FAILED)
+            throw new JpaException("Hydration failed for '%s' and there is nothing to serve", this.type.getName());
+
+        return this.rows;
     }
 
     /**
-     * Executes a Hibernate criteria query as a lazy {@code getResultStream()} within the
-     * given session, attaches an in-memory {@link ForeignIds} resolver as a {@code peek()} step,
-     * and returns a {@link LifecycleSingleStream} that owns the session and closes it on the
-     * first terminal operation.
+     * Reads this type's rows from its source and holds them, without resolving any link.
      *
-     * <p>The session passed in MUST be a fresh, caller-owned scoped session - typically opened
-     * via {@link JpaSession#openScopedSession()}. The returned stream takes ownership of the
-     * session lifecycle and closes it inside every terminal listed on
-     * {@link LifecycleSingleStream}.</p>
+     * <p>Links are resolved separately by {@link #link()} because a link reaches rows another
+     * repository holds, and every repository has to have read before any of them can be linked.
      *
-     * <p>For entities with {@link ForeignIds} fields, the FK target lookup maps are pre-built
-     * via independent {@code targetRepo.stream()} sessions BEFORE the parent cursor is opened.
-     * Per-element {@code session.find()} from inside a {@code peek} step would close the
-     * parent's open {@code ResultSet} on single-cursor drivers like H2 (HHH-style "object is
-     * already closed" exception), so the only safe path is to materialize the lookup tables
-     * up front and use pure in-memory map access during peek.</p>
-     *
-     * @param session the caller-owned Hibernate session, transferred to the returned stream
-     * @return a lifecycle-aware stream of all entities of type {@code T}
-     * @throws JpaException if criteria query construction fails
+     * @throws JpaException if the source read fails
      */
-    public @NotNull SingleStream<T> stream(@NotNull Session session) throws JpaException {
+    void hydrate() throws JpaException {
+        Instant startedAt = Instant.now();
+        boolean first = this.state == HydrationState.UNHYDRATED;
+        this.state = first ? HydrationState.HYDRATING : HydrationState.REFRESHING;
+
         try {
-            // Pre-build FK lookup maps via independent sessions BEFORE opening the parent
-            // cursor. See method Javadoc for why per-element find() inside peek is unsafe.
-            ConcurrentMap<String, ConcurrentMap<String, JpaModel>> fkLookups = this.hasForeignIds()
-                ? this.buildForeignIdLookups()
-                : Concurrent.newMap();
+            ConcurrentList<T> read = this.source.read(this.type);
+            read.forEach(entity -> {
+                if (entity instanceof PostInit postInit)
+                    postInit.postInit();
+            });
 
-            CriteriaBuilder criteriaBuilder = session.getCriteriaBuilder();
-            CriteriaQuery<T> criteriaQuery = criteriaBuilder.createQuery(this.getType());
-            Root<T> rootEntry = criteriaQuery.from(this.getType());
-            criteriaQuery = criteriaQuery.select(rootEntry);
-
-            Stream<T> jdkStream = session.createQuery(criteriaQuery).getResultStream();
-
-            if (this.hasForeignIds())
-                jdkStream = jdkStream.peek(entity -> this.resolveForeignIdsForOne(entity, fkLookups));
-
-            return LifecycleSingleStream.of(jdkStream, session);
+            this.rows = read.toUnmodifiable();
         } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
-    }
-
-    /**
-     * Executes only the store reload phase without cache eviction or warming
-     * if {@code evictWarmCache} is {@code false}.
-     * <p>
-     * Forces an immediate full refresh cycle: store reload, cache eviction,
-     * and cache warming if {@code evictWarmCache} is {@code true}.
-     *
-     * <p>Used by {@link JpaSession#refreshAll()} for coordinated multi-repository refresh
-     * where eviction and warming are handled as separate phases.
-     *
-     * @throws JpaException if the store fails
-     */
-    void refresh(boolean evictWarmCache) throws JpaException {
-        Instant startTime = Instant.now();
-
-        try {
-            this.persistToDatabase();
-
-            if (evictWarmCache)
-                this.evict();
-        } catch (JpaException jpaEx) {
-            throw jpaEx;
-        } catch (Exception ex) {
-            throw new JpaException(ex);
+            this.state = first ? HydrationState.FAILED : HydrationState.DEGRADED;
+            throw exception instanceof JpaException jpaException
+                ? jpaException
+                : new JpaException(exception, "Failed to hydrate '%s'", this.type.getName());
         } finally {
-            this.lastRefresh = Stopwatch.of(startTime);
+            this.lastRefresh = Stopwatch.of(startedAt);
+
+            if (first)
+                this.initialLoad = this.lastRefresh;
         }
     }
 
     /**
-     * Upserts the given entities into the database via a {@link StatelessSession},
-     * storing them for subsequent {@link #removeStaleEntities()} processing.
+     * Resolves every declared link on the held rows and publishes the generation.
      *
-     * <p>Uses {@link StatelessSession#upsertMultiple} to bypass dirty checking entirely,
-     * avoiding HHH000502 warnings on {@code @JoinColumn(insertable = false, updatable = false)}
-     * properties whose relationship references are null after JSON deserialization. Stale rows
-     * are cleaned up separately by {@link #removeStaleEntities()} in reverse topological order.
-     *
+     * <p>Runs after every repository has hydrated, so a link into another type finds that type's rows
+     * already read. Publication happens here rather than in {@link #hydrate()} because an index built
+     * over rows whose links are still empty describes rows no reader will see.
      */
-    void persistToDatabase() throws JpaException {
-        this.persistToDatabase(this.source.read(this.type));
+    void link() {
+        if (this.state == HydrationState.FAILED || this.state == HydrationState.DEGRADED)
+            return;
+
+        if (this.hasLinks())
+            this.rows.forEach(this::resolveLinks);
+
+        this.hydratedAt = Instant.now();
+        this.state = HydrationState.CURRENT;
     }
 
     /**
-     * Upserts the given entities into the database via a {@link StatelessSession},
-     * storing them for subsequent {@link #removeStaleEntities()} processing.
-     *
-     * @param entities the rows to write
-     * @throws JpaException if the write fails
+     * Marks the held generation as past its freshness window.
      */
-    void persistToDatabase(@NotNull ConcurrentList<T> entities) throws JpaException {
-        if (entities.isEmpty())
-            return;
-
-        this.lastLoadedEntities = entities;
-
-        entities.forEach(entity -> {
-            if (entity instanceof PostInit)
-                ((PostInit) entity).postInit();
-        });
-
-        try (StatelessSession statelessSession = this.getSession().getSessionFactory().openStatelessSession()) {
-            statelessSession.getTransaction().begin();
-            statelessSession.upsertMultiple(entities);
-            statelessSession.getTransaction().commit();
-        } catch (JpaException jpaEx) {
-            throw jpaEx;
-        } catch (Exception ex) {
-            throw new JpaException(ex);
-        }
+    void markStale() {
+        if (this.state == HydrationState.CURRENT)
+            this.state = HydrationState.STALE;
     }
 
     /**
-     * Deletes database rows whose IDs are not present in the most recent
-     * {@link #persistToDatabase} call's entity list.
+     * Resolves every link on one row against the repositories holding their targets.
      *
-     * <p>This method consumes and clears the stored entity list. It is a no-op if
-     * {@link #persistToDatabase} has not been called since the last invocation,
-     * if the loaded list was empty, or if no {@link Id} field exists on the entity.
-     *
-     * <p>Called by {@link JpaSession#refreshAll()} in reverse topological order
-     * (children first) to ensure FK-safe stale removal.
-     */
-    void removeStaleEntities() {
-        ConcurrentList<T> loaded = this.lastLoadedEntities;
-        this.lastLoadedEntities = null;
-
-        if (loaded == null || loaded.isEmpty() || this.idAccessor.isEmpty())
-            return;
-
-        FieldAccessor<?> idField = this.idAccessor.get();
-        ConcurrentList<Object> validIds = loaded.stream()
-            .map(entity -> idField.get(entity))
-            .filter(Objects::nonNull)
-            .collect(Concurrent.toList());
-
-        if (validIds.isEmpty())
-            return;
-
-        this.getSession().transaction(hibernateSession -> {
-            hibernateSession.createMutationQuery(
-                "DELETE FROM " + this.getType().getSimpleName() + " WHERE " + idField.getName() + " NOT IN :ids"
-            )
-            .setParameter("ids", validIds)
-            .executeUpdate();
-        });
-    }
-
-    /**
-     * Pre-builds the in-memory lookup maps for every {@link ForeignIds}-annotated field on
-     * {@code T}. For each FK field this materializes the target repository (via an
-     * independent scoped session) into a map keyed by the target's {@link Id} value.
-     *
-     * <p>Building these maps BEFORE the parent stream's cursor opens is the only safe
-     * pattern on single-cursor JDBC drivers like H2 - issuing a {@code find()} on the
-     * parent session inside a {@code peek} step would close the parent's open
-     * {@code ResultSet} mid-iteration. The materialization is restricted to types whose
-     * {@code @ForeignIds} sibling collection is non-empty on at least one parent entity,
-     * but for simplicity we eagerly load every target type that any FK field references.</p>
-     *
-     * @return a map keyed by FK field name, whose value is a per-id lookup of target entities
+     * @param entity the row to fill in
      */
     @SuppressWarnings("unchecked")
-    private @NotNull ConcurrentMap<String, ConcurrentMap<String, JpaModel>> buildForeignIdLookups() {
-        ConcurrentMap<String, ConcurrentMap<String, JpaModel>> lookups = Concurrent.newMap();
-        Reflection<?> reflection = new Reflection<>(this.getType());
+    private void resolveLinks(@NotNull T entity) {
+        Reflection<?> reflection = new Reflection<>(this.type);
 
-        for (FieldAccessor<?> fieldAccessor : reflection.getFields()) {
-            Optional<ForeignIds> annotation = fieldAccessor.getAnnotation(ForeignIds.class);
-            if (annotation.isEmpty()) continue;
+        for (FieldAccessor<?> field : links(this.type)) {
+            String idProperty = idPropertyOf(field);
+            Class<? extends JpaModel> target = targetOf(field);
+            Repository<? extends JpaModel> repository = this.session.getRepository(target);
+            Object held = reflection.getField(idProperty).get(entity);
 
-            ParameterizedType listType = (ParameterizedType) fieldAccessor.getGenericType();
-            Class<? extends JpaModel> targetType = (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
+            if (Collection.class.isAssignableFrom(field.getType())) {
+                Collection<String> ids = (Collection<String>) held;
 
-            FieldAccessor<?> targetIdAccessor = new Reflection<>(targetType).getFields()
-                .stream()
-                .filter(fa -> fa.hasAnnotation(Id.class))
-                .findFirst()
-                .orElseThrow(() -> new JpaException("No @Id field found on entity: %s", targetType.getName()));
+                if (ids == null || ids.isEmpty()) {
+                    field.set(entity, Concurrent.newList());
+                    continue;
+                }
 
-            Repository<? extends JpaModel> targetRepo = this.getSession().getRepository(targetType);
-            ConcurrentList<? extends JpaModel> allTargets = targetRepo.findAll();
+                ConcurrentMap<String, ? extends JpaModel> lookup = keyed(repository);
+                ConcurrentList<JpaModel> resolved = ids.stream()
+                    .map(lookup::get)
+                    .filter(Objects::nonNull)
+                    .collect(Concurrent.toList());
 
-            ConcurrentMap<String, JpaModel> idMap = Concurrent.newMap();
-            for (JpaModel target : allTargets) {
-                Object targetId = targetIdAccessor.get(target);
-
-                // Two targets stringifying to one id is a corpus mistake either way, and the first
-                // row is the one a reader scanning the table in order would have found.
-                if (targetId != null)
-                    idMap.putIfAbsent(String.valueOf(targetId), target);
-            }
-
-            lookups.put(fieldAccessor.getName(), idMap);
-        }
-
-        return lookups;
-    }
-
-    /**
-     * Resolves {@link ForeignIds}-annotated transient fields on a single entity by looking
-     * each id up in the pre-built {@code fkLookups} map, which was materialized before the
-     * parent stream's cursor opened (see {@link #buildForeignIdLookups()}).
-     *
-     * <p>Invoked from a {@code peek()} step on the lazy result stream. Pure in-memory
-     * lookup with no Hibernate involvement, so it cannot close the parent's
-     * {@code ResultSet}.</p>
-     *
-     * @param entity the entity whose foreign id fields should be populated
-     * @param fkLookups the pre-built lookup maps keyed by FK field name then by target id
-     */
-    @SuppressWarnings("unchecked")
-    private void resolveForeignIdsForOne(@NotNull T entity, @NotNull ConcurrentMap<String, ConcurrentMap<String, JpaModel>> fkLookups) {
-        Reflection<?> reflection = new Reflection<>(this.getType());
-
-        for (FieldAccessor<?> fieldAccessor : reflection.getFields()) {
-            Optional<ForeignIds> annotation = fieldAccessor.getAnnotation(ForeignIds.class);
-            if (annotation.isEmpty()) continue;
-
-            FieldAccessor<Collection<String>> idsAccessor = reflection.getField(annotation.get().value());
-
-            Collection<String> ids = idsAccessor.get(entity);
-
-            if (ids == null || ids.isEmpty()) {
-                fieldAccessor.set(entity, Concurrent.newList());
+                field.set(entity, resolved);
                 continue;
             }
 
-            ConcurrentMap<String, JpaModel> idMap = fkLookups.get(fieldAccessor.getName());
-
-            ConcurrentList<JpaModel> resolved = ids.stream()
-                .map(idMap::get)
-                .filter(Objects::nonNull)
-                .collect(Concurrent.toList());
-
-            fieldAccessor.set(entity, resolved);
+            if (held != null)
+                field.set(entity, keyed(repository).get(String.valueOf(held)));
         }
     }
 
     /**
-     * Deletes the given entity within a new transaction.
+     * Indexes one repository's rows by their identifier.
      *
-     * @param model the entity to delete
-     * @return the deleted entity
-     * @throws JpaException if the delete fails
+     * @param repository the repository whose rows are being reached into
+     * @return the rows keyed by their stringified identifier
      */
-    public @NotNull T delete(@NotNull T model) throws JpaException {
-        return this.getSession().transaction(session -> {
-            return this.delete(session, model);
-        });
+    private static @NotNull ConcurrentMap<String, JpaModel> keyed(@NotNull Repository<? extends JpaModel> repository) {
+        FieldAccessor<?> id = new Reflection<>(repository.getType()).getFields()
+            .stream()
+            .filter(field -> field.hasAnnotation(Id.class))
+            .findFirst()
+            .orElseThrow(() -> new JpaException("No @Id field found on entity: %s", repository.getType().getName()));
+
+        ConcurrentMap<String, JpaModel> keyed = Concurrent.newMap();
+
+        for (JpaModel row : repository.getRows()) {
+            Object value = id.get(row);
+
+            // Two rows stringifying to one id is a corpus mistake either way, and the first is the
+            // one a reader scanning the table in order would have found.
+            if (value != null)
+                keyed.putIfAbsent(String.valueOf(value), row);
+        }
+
+        return keyed;
     }
 
     /**
-     * Deletes the given entity using the provided Hibernate session.
+     * Finds every field on a type declaring a link.
      *
-     * @param session the Hibernate session to use
-     * @param model the entity to delete
-     * @return the deleted entity
-     * @throws JpaException if the delete fails
+     * @param type the entity class to read
+     * @return the linking fields, empty when the type declares none
      */
-    public @NotNull T delete(@NotNull Session session, @NotNull T model) throws JpaException {
-        try {
-            session.remove(model);
-            return model;
-        } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
+    private static @NotNull ConcurrentSet<FieldAccessor<?>> links(@NotNull Class<?> type) {
+        return new Reflection<>(type).getFields()
+            .stream()
+            .filter(field -> field.hasAnnotation(Linked.class) || field.hasAnnotation(ForeignIds.class))
+            .collect(Concurrent.toSet());
+    }
+
+    /**
+     * Reads the property a linking field resolves through.
+     *
+     * @param field the linking field
+     * @return the name of the property carrying the id or ids
+     */
+    private static @NotNull String idPropertyOf(@NotNull FieldAccessor<?> field) {
+        return field.getAnnotation(Linked.class)
+            .map(Linked::value)
+            .orElseGet(() -> field.getAnnotation(ForeignIds.class).orElseThrow().value());
+    }
+
+    /**
+     * Reads the type a linking field resolves to, which is its element type when it holds many.
+     *
+     * @param field the linking field
+     * @return the target entity class
+     */
+    @SuppressWarnings("unchecked")
+    private static @NotNull Class<? extends JpaModel> targetOf(@NotNull FieldAccessor<?> field) {
+        if (!Collection.class.isAssignableFrom(field.getType()))
+            return (Class<? extends JpaModel>) field.getType();
+
+        ParameterizedType listType = (ParameterizedType) field.getGenericType();
+        return (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
     }
 
     /**
@@ -433,7 +354,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
         try {
             SessionFactory sessionFactory = this.getSession().getSessionFactory();
 
-            if (sessionFactory.getCache() != null)
+            if (sessionFactory != null && sessionFactory.getCache() != null)
                 sessionFactory.getCache().evict(this.getType());
         } catch (Exception ex) {
             throw new JpaException(ex);
@@ -441,70 +362,14 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Persists the given entity within a new transaction and returns it
-     * with any generated keys populated.
+     * Replaces the held generation outright, for a caller that already has the rows.
      *
-     * @param model the entity to persist
-     * @return the persisted entity
-     * @throws JpaException if the save fails
+     * @param replacement the rows to hold
      */
-    public @NotNull T save(@NotNull T model) throws JpaException {
-        return this.getSession().transaction(session -> {
-            return this.save(session, model);
-        });
-    }
-
-    /**
-     * Persists the given entity using the provided Hibernate session and
-     * returns it with any generated keys populated.
-     *
-     * @param session the Hibernate session to use
-     * @param model the entity to persist
-     * @return the persisted entity
-     * @throws JpaException if the save fails
-     */
-    public @NotNull T save(@NotNull Session session, @NotNull T model) throws JpaException {
-        try {
-            session.persist(model);
-            return model;
-        } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
-    }
-
-    /**
-     * Updates the given entity within a new transaction.
-     *
-     * @param model the entity to update
-     * @return the updated entity
-     * @throws JpaException if the update fails
-     */
-    public @NotNull T update(@NotNull T model) throws JpaException {
-        return this.getSession().transaction(session -> {
-            return this.update(session, model);
-        });
-    }
-
-    /**
-     * Updates the given entity using the provided Hibernate session.
-     *
-     * <p>Silently ignores {@link NonUniqueObjectException} if the entity
-     * is already associated with the session.</p>
-     *
-     * @param session the Hibernate session to use
-     * @param model the entity to update
-     * @return the updated entity
-     * @throws JpaException if the update fails for reasons other than a duplicate association
-     */
-    public @NotNull T update(@NotNull Session session, @NotNull T model) throws JpaException {
-        try {
-            session.merge(model);
-            return model;
-        } catch (NonUniqueObjectException nuoException) {
-            return model;
-        } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
+    void hold(@Nullable ConcurrentList<T> replacement) {
+        this.rows = replacement == null ? Concurrent.newUnmodifiableList() : replacement.toUnmodifiable();
+        this.hydratedAt = Instant.now();
+        this.state = HydrationState.CURRENT;
     }
 
 }

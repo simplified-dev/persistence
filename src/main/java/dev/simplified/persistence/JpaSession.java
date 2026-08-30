@@ -10,7 +10,9 @@ import dev.simplified.collection.tuple.single.LifecycleSingleStream;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.store.Source;
+import dev.simplified.persistence.store.WriteRequest;
 import dev.simplified.persistence.type.TypeRegistrar;
+import jakarta.persistence.criteria.CriteriaQuery;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
 import dev.simplified.util.Logging;
@@ -18,6 +20,7 @@ import dev.simplified.util.time.Stopwatch;
 import org.ehcache.core.Ehcache;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
+import org.hibernate.StatelessSession;
 import org.hibernate.Transaction;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.hibernate.boot.Metadata;
@@ -439,18 +442,23 @@ public final class JpaSession {
             for (Class<JpaModel> model : this.models)
                 this.repositories.put(model, this.createRepository(model));
 
+            this.hydrate(this.models);
             this.repositoryCache = Stopwatch.of(startTime);
 
-            // Schedule proactive refresh at the shortest cache interval
+            // A type asks for a cadence through @Hydration; one that declares none is hydrated here
+            // and left alone. The tick runs at the shortest declared interval and rebuilds only what
+            // has come due.
             long minIntervalMs = this.repositories.values()
                 .stream()
-                .mapToLong(repo -> repo.getCacheDuration().toMillis())
+                .filter(JpaRepository.class::isInstance)
+                .map(repository -> (JpaRepository<?>) repository)
+                .mapToLong(repository -> repository.getHydrationInterval().toMillis())
                 .filter(ms -> ms > 0)
                 .min()
                 .orElse(0);
 
             if (minIntervalMs > 0)
-                this.scheduler.scheduleAsync(this::refreshAll, minIntervalMs, minIntervalMs, TimeUnit.MILLISECONDS);
+                this.scheduler.scheduleAsync(this::hydrateDue, minIntervalMs, minIntervalMs, TimeUnit.MILLISECONDS);
         } else
             throw new JpaException("Session has already cached repositories");
     }
@@ -463,179 +471,137 @@ public final class JpaSession {
      * @return the repository for that type
      */
     private <T extends JpaModel> @NotNull JpaRepository<T> createRepository(@NotNull Class<T> type) {
-        return new JpaRepository<>(this, type, this.config.getRepositoryFactory().sourceFor(type));
+        Source declared = this.config.getRepositoryFactory().sourceFor(type);
+        return new JpaRepository<>(this, type, declared == Source.none() ? this.relational() : declared);
     }
 
     /**
-     * Performs a coordinated 3-phase refresh across all due entity types.
+     * The source for types whose rows the database itself authors.
      *
-     * <p><b>Phase 1</b> - Update data stores in topological order (parents first):
-     * calls {@link JpaRepository#refresh(boolean)} which delegates to the entity's
-     * {@link Source}. Document sources merge fresh data into the DB; a type whose rows the
-     * database authors reads nothing.</p>
+     * <p>A factory that declares no origin for a type is saying the database is the origin, so this
+     * stands in for {@link Source#none()} at construction. Substituting once, here, is what lets every
+     * repository hold a generation and answer from an index without a read ever asking where its rows
+     * came from.
      *
-     * <p><b>Phase 2</b> - Remove stale entities in reverse topological order (children first):
-     * calls {@link JpaRepository#removeStaleEntities()} to delete DB rows whose IDs
-     * were not present in the last {@link JpaRepository#persistToDatabase} call.
-     * Only affects types whose strategy set {@code lastLoadedEntities}.</p>
-     *
-     * <p><b>Phase 3</b> - Warm all due caches: evicts the L2 cache and re-queries the
-     * database, creating fresh cache entries whose JCache TTL resets via
-     * {@link ModifiedExpiryPolicy}.</p>
-     *
-     * <p>Each per-type operation is wrapped in a try/catch for best-effort processing;
-     * failures are logged and do not prevent other types from being refreshed.</p>
+     * @return a source reading whole tables through Hibernate
      */
-    private void refreshAll() {
-        ConcurrentList<Class<? extends JpaModel>> dueModels = Concurrent.newList();
+    private @NotNull Source relational() {
+        return new Source.Writable() {
 
-        // Phase 1: Update data sources (topological order, parents first)
-        for (Class<? extends JpaModel> model : this.models) {
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
-
-            if (repo.getCacheDuration().isZero())
-                continue;
-
-            java.time.Duration elapsed = java.time.Duration.between(repo.getLastRefresh().completedAt(), Instant.now());
-            if (elapsed.compareTo(repo.getCacheDuration()) < 0)
-                continue;
-
-            try {
-                repo.refresh(false);
-                dueModels.add(model);
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to refresh data for '%s'", model.getSimpleName());
+            @Override
+            public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
+                return JpaSession.this.with(hibernate -> {
+                    CriteriaQuery<T> query = hibernate.getCriteriaBuilder().createQuery(type);
+                    query.select(query.from(type));
+                    return Concurrent.newUnmodifiableList(hibernate.createQuery(query).getResultList());
+                });
             }
-        }
 
-        // Phase 2: Remove stale entities (reverse topological order, children first)
-        ConcurrentList<Class<JpaModel>> allModelsReversed = this.models.reversed();
+            /**
+             * {@inheritDoc}
+             *
+             * <p>A relational origin always accepts writes. Refusing one is the database's job, through
+             * the permissions the connection was opened under, rather than this library's.
+             */
+            @Override
+            public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
+                if (request.rows().isEmpty())
+                    return;
 
-        for (Class<? extends JpaModel> model : allModelsReversed) {
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
+                if (request.operation() == WriteRequest.Operation.DELETE) {
+                    JpaSession.this.transaction((Consumer<Session>) hibernate -> request.rows().forEach(hibernate::remove));
+                    return;
+                }
 
-            try {
-                repo.removeStaleEntities();
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to remove stale entities for '%s'", model.getSimpleName());
+                // upsertMultiple bypasses dirty checking entirely, which is what keeps a row carrying a
+                // read-only join column from raising HHH000502 when its association is not loaded.
+                try (StatelessSession stateless = JpaSession.this.sessionFactory.openStatelessSession()) {
+                    stateless.getTransaction().begin();
+                    stateless.upsertMultiple(request.rows());
+                    stateless.getTransaction().commit();
+                } catch (JpaException jpaException) {
+                    throw jpaException;
+                } catch (Exception exception) {
+                    throw new JpaException(exception, "Failed to write '%s'", request.type().getName());
+                }
             }
-        }
 
-        // Phase 3: Evict L2 entries for due types. Phase 2d removed the eager warm pass
-        // (the prior `repo.stream().close()` line) because the L2 entity cache populates as
-        // a side effect of any subsequent streaming hydration - see ResearchPack finding A4.
-        // The eviction itself is still required because Phase 1 may have replaced rows that
-        // older cached entries point to.
-        for (Class<? extends JpaModel> model : dueModels) {
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
-
-            try {
-                repo.evict();
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to evict cache for '%s'", model.getSimpleName());
-            }
-        }
+        };
     }
 
     /**
-     * Performs an unconditional 3-phase refresh of the specified model subset,
-     * bypassing the {@link CacheExpiry} due-check that gates the scheduled
-     * {@link #refreshAll()} path.
+     * Reads every registered type, then resolves every link across them.
      *
-     * <p>Use this when an external signal (for example the Phase 4c asset poller
-     * detecting a {@code skyblock-data} commit change) requires an immediate
-     * targeted refresh rather than waiting for the next scheduler tick. The
-     * method is idempotent and safe to invoke repeatedly with the same set.
+     * <p>Two passes rather than one because a link reaches rows another repository holds, so every
+     * repository has to have read before any of them can be linked. That is also what removes the
+     * ordering constraint the model sort used to carry.
      *
-     * <p>Execution mirrors {@link #refreshAll()}:
-     * <ol>
-     *     <li><b>Phase 1</b> - iterate {@link #models} in topological order and call
-     *         {@link JpaRepository#refresh(boolean)} for every model present in {@code targetModels}
-     *         that has a registered repository. Models with no source are no-ops.</li>
-     *     <li><b>Phase 2</b> - iterate the reversed model list and call
-     *         {@link JpaRepository#removeStaleEntities()} on the same target set so
-     *         FK-dependent children are removed before parents.</li>
-     *     <li><b>Phase 3</b> - iterate the target set and call {@link JpaRepository#evict()}
-     *         so subsequent queries repopulate the L2 entity cache from the newly-loaded rows.</li>
-     * </ol>
+     * <p>A failing type aborts the pass. Continuing would publish a generation whose links point into
+     * a type that never read, which is a wrong answer rather than a missing one.
      *
-     * <p>Entries in {@code targetModels} that do not match any registered repository
-     * are silently skipped - the caller (for example a poller that resolves model classes
-     * from a remote manifest) may legitimately reference classes that have been renamed or
-     * removed since the last schema revision, and crashing the refresh cycle over a
-     * dangling entry would defeat the poller's graceful-degradation design.
-     *
-     * <p>An empty or {@code null}-element-free target set is a no-op. Per-model failures
-     * are wrapped in {@link JpaException} with the model's simple name in the message.
-     *
-     * @param targetModels the model subset to refresh; entries not registered in this
-     *                     session are skipped
-     * @throws JpaException if any source reload, stale removal, or cache eviction fails
+     * @param models the types to rebuild
      */
-    public void refreshModels(@NotNull Collection<Class<? extends JpaModel>> targetModels) {
+    private void hydrate(@NotNull Iterable<Class<JpaModel>> models) {
+        ConcurrentList<JpaRepository<?>> hydrated = Concurrent.newList();
+
+        for (Class<JpaModel> model : models) {
+            if (this.repositories.get(model) instanceof JpaRepository<?> repository) {
+                repository.hydrate();
+                hydrated.add(repository);
+            }
+        }
+
+        hydrated.forEach(JpaRepository::link);
+    }
+
+    /**
+     * Rebuilds every type whose {@link Hydration} cadence has come due, and marks the rest stale when
+     * they have stood too long.
+     */
+    private void hydrateDue() {
+        ConcurrentList<Class<JpaModel>> due = Concurrent.newList();
+
+        for (Class<JpaModel> model : this.models) {
+            if (!(this.repositories.get(model) instanceof JpaRepository<?> repository))
+                continue;
+
+            if (repository.isDue())
+                due.add(model);
+            else if (repository.isPastStaleness())
+                repository.markStale();
+        }
+
+        if (due.notEmpty())
+            this.hydrate(due);
+    }
+
+    /**
+     * Applies one write to the origin that owns the type, then rebuilds that type.
+     *
+     * <p>The rebuild is what keeps a held generation honest after a write: the rows the origin now
+     * holds are not the rows this session read. It is driven by the write rather than by a caller
+     * asking for it, so nothing downstream gains a way to force a rehydration.
+     *
+     * @param request the write to apply
+     * @param <M> the entity type
+     * @throws JpaException if the session is inactive, the type is unregistered, or its source holds
+     *         no write instruction
+     */
+    public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())
             throw new JpaException("Session connection is not active");
 
-        if (targetModels.isEmpty())
-            return;
+        if (!(this.getRepository(request.type()) instanceof JpaRepository<M> repository))
+            throw new JpaException("Repository for '%s' cannot be written through", request.type().getName());
 
-        Set<Class<? extends JpaModel>> targetSet = new HashSet<>(targetModels);
+        if (!(repository.getSource() instanceof Source.Writable writable))
+            throw new JpaException("Source for '%s' holds no write instruction", request.type().getName());
 
-        // Phase 1: Update data sources in topological order, restricted to the target subset.
-        ConcurrentList<Class<? extends JpaModel>> refreshedModels = Concurrent.newList();
-        for (Class<JpaModel> model : this.models) {
-            if (!targetSet.contains(model))
-                continue;
-
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
-
-            try {
-                repo.refresh(false);
-                refreshedModels.add(model);
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to refresh data for '%s'", model.getSimpleName());
-            }
-        }
-
-        // Phase 2: Remove stale entities in reverse topological order so children drop before parents.
-        for (Class<? extends JpaModel> model : this.models.reversed()) {
-            if (!targetSet.contains(model))
-                continue;
-
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
-
-            try {
-                repo.removeStaleEntities();
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to remove stale entities for '%s'", model.getSimpleName());
-            }
-        }
-
-        // Phase 3: Evict the L2 entity region for every model that actually reloaded data.
-        // Matches the refreshAll() rationale - subsequent streaming hydration repopulates L2
-        // as a side effect, so no eager warm pass is required.
-        for (Class<? extends JpaModel> model : refreshedModels) {
-            Repository<? extends JpaModel> repoIface = this.repositories.get(model);
-            if (!(repoIface instanceof JpaRepository<?> repo))
-                continue;
-
-            try {
-                repo.evict();
-            } catch (Exception ex) {
-                throw new JpaException(ex, "Failed to evict cache for '%s'", model.getSimpleName());
-            }
-        }
+        writable.write(request);
+        repository.hydrate();
+        repository.link();
     }
+
 
     /**
      * Exports this session's DDL schema to a persistent H2 file database for IDE
