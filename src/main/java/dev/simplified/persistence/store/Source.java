@@ -23,6 +23,8 @@ import java.lang.reflect.Type;
  * expressed in the type system rather than in a document.
  *
  * @see Writable
+ * @see DocumentOrigin
+ * @see RelationalOrigin
  */
 public interface Source {
 
@@ -35,18 +37,6 @@ public interface Source {
      * @throws JpaException if the read fails
      */
     <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException;
-
-    /**
-     * Returns the source for rows the database itself authors.
-     *
-     * <p>It reads nothing, because there is no external origin to read from. Every registered type has
-     * a source this way, so nothing has to special-case the absence of one.
-     *
-     * @return a source that holds no rows
-     */
-    static @NotNull Source none() {
-        return None.INSTANCE;
-    }
 
     /**
      * Returns a source reading each type out of the layers an origin names for it.
@@ -76,23 +66,6 @@ public interface Source {
      */
     static @NotNull Writable documents(@NotNull DocumentOrigin.Writable origin, @NotNull Gson gson) {
         return new WritableDocuments(origin, gson);
-    }
-
-    /**
-     * Holder for the source of rows the database itself authors.
-     */
-    final class None implements Source {
-
-        private static final @NotNull Source INSTANCE = new None();
-
-        private None() {}
-
-        /** {@inheritDoc} */
-        @Override
-        public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
-            return Concurrent.newUnmodifiableList();
-        }
-
     }
 
     /**

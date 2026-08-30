@@ -59,10 +59,13 @@ class GsonTypeRoundTripTest {
     static void connect() {
         sessionManager = new SessionManager();
 
-        JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "gson_type_round_trip")
-            .isUsing2ndLevelCache(false)
-            .isUsingQueryCache(false)
-            .withDefaultCacheExpiryMs(0)
+        JpaConfig config = JpaConfig.common(
+            H2MemoryDriver.named("gson_type_round_trip")
+                .isUsing2ndLevelCache(false)
+                .isUsingQueryCache(false)
+                .withDefaultCacheExpiryMs(0)
+                .build()
+        )
             .withRepositoryFactory(
                 RepositoryFactory.of(GsonFixtureModel.class)
             )
@@ -534,10 +537,13 @@ class GsonTypeRoundTripTest {
         void doubleAndFloatInnerTypesFailToCreateTheirTable() {
             SessionManager manager = new SessionManager();
 
-            JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "floating_optional")
-                .isUsing2ndLevelCache(false)
-                .isUsingQueryCache(false)
-                .withDefaultCacheExpiryMs(0)
+            JpaConfig config = JpaConfig.common(
+                H2MemoryDriver.named("floating_optional")
+                    .isUsing2ndLevelCache(false)
+                    .isUsingQueryCache(false)
+                    .withDefaultCacheExpiryMs(0)
+                    .build()
+            )
                 .withRepositoryFactory(
                     RepositoryFactory.of(FloatingOptionalModel.class)
                 )

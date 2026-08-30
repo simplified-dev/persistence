@@ -1,25 +1,34 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
+import dev.simplified.persistence.store.RelationalOrigin;
 import org.jetbrains.annotations.NotNull;
 
+import java.nio.file.Path;
+
 /**
- * {@link JpaDriver} implementation for H2 file-based databases (default port 0).
- * <p>
- * Stores data in a persistent file on disk. The {@code schema} parameter is used as
- * the file path (e.g. {@code "./data/mydb"} produces {@code jdbc:h2:file:./data/mydb}).
+ * An H2 database held in a file on disk.
+ *
+ * <p>It is reached by path and by nothing else, and it outlives the session that opened it - so the
+ * schema is brought up to the mapping on connect rather than created and dropped around it.
  */
 @Getter
-public class H2FileDriver implements JpaDriver {
+public final class H2FileDriver implements JpaDriver {
 
-    private final int defaultPort = 0;
     private final @NotNull String dialectClass = "org.hibernate.dialect.H2Dialect";
     private final @NotNull String classPath = "org.h2.Driver";
+    private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.UPDATE;
 
-    /** {@inheritDoc} */
-    @Override
-    public @NotNull String getConnectionUrl(@NotNull String host, int port, @NotNull String schema) {
-        return String.format("jdbc:h2:file:%s", schema);
+    private H2FileDriver() {}
+
+    /**
+     * Names a file database.
+     *
+     * @param path the database file path, without the H2 suffix
+     * @return a builder over that database
+     */
+    public static @NotNull RelationalOrigin.Builder at(@NotNull Path path) {
+        return RelationalOrigin.of(new H2FileDriver(), String.format("jdbc:h2:file:%s", path));
     }
 
 }

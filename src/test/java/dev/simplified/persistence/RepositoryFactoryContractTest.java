@@ -12,6 +12,8 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
@@ -56,9 +58,9 @@ class RepositoryFactoryContractTest {
     private static final class DeclaredFactory implements RepositoryFactory {
 
         private final @NotNull ConcurrentList<Class<JpaModel>> models;
-        private final @NotNull Source source;
+        private final @NotNull Optional<Source> source;
 
-        private DeclaredFactory(@NotNull ConcurrentList<Class<JpaModel>> models, @NotNull Source source) {
+        private DeclaredFactory(@NotNull ConcurrentList<Class<JpaModel>> models, @NotNull Optional<Source> source) {
             this.models = models;
             this.source = source;
         }
@@ -71,8 +73,8 @@ class RepositoryFactoryContractTest {
      */
     private static final class SplitFactory implements RepositoryFactory {
 
-        private final @NotNull Source primary = Source.none();
-        private final @NotNull Source secondary = Source.documents(EMPTY_ORIGIN, new Gson());
+        private final @NotNull Optional<Source> primary = Optional.empty();
+        private final @NotNull Optional<Source> secondary = Optional.of(Source.documents(EMPTY_ORIGIN, new Gson()));
 
         @Override
         public @NotNull ConcurrentList<Class<JpaModel>> getModels() {
@@ -80,12 +82,12 @@ class RepositoryFactoryContractTest {
         }
 
         @Override
-        public @NotNull Source getSource() {
+        public @NotNull Optional<Source> getSource() {
             return this.primary;
         }
 
         @Override
-        public @NotNull Source sourceFor(@NotNull Class<? extends JpaModel> type) {
+        public @NotNull Optional<Source> sourceFor(@NotNull Class<? extends JpaModel> type) {
             return type == LayeredRow.class ? this.secondary : this.primary;
         }
 
@@ -104,24 +106,24 @@ class RepositoryFactoryContractTest {
     @Test
     @DisplayName("a declared factory answers its own fields through the contract type")
     void generatedAccessorsSatisfyTheContract() {
-        Source declared = Source.none();
+        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
 
         // Held as the interface deliberately: a generated accessor whose name drifted would leave
         // the contract's own answer in place, and only this reference sees that.
-        RepositoryFactory factory = new DeclaredFactory(models(ContractRow.class, LayeredRow.class), declared);
+        RepositoryFactory factory = new DeclaredFactory(models(ContractRow.class, LayeredRow.class), Optional.of(declared));
 
         assertThat(factory.getModels(), contains(ContractRow.class, LayeredRow.class));
-        assertThat(factory.getSource(), sameInstance(declared));
+        assertThat(factory.getSource().orElseThrow(), sameInstance(declared));
     }
 
     @Test
     @DisplayName("sourceFor falls through to the single source unless a factory says otherwise")
     void sourceForDefaultsToTheOneSource() {
-        Source declared = Source.none();
-        RepositoryFactory factory = new DeclaredFactory(models(ContractRow.class), declared);
+        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
+        RepositoryFactory factory = new DeclaredFactory(models(ContractRow.class), Optional.of(declared));
 
-        assertThat(factory.sourceFor(ContractRow.class), sameInstance(declared));
-        assertThat(factory.sourceFor(LayeredRow.class), sameInstance(declared));
+        assertThat(factory.sourceFor(ContractRow.class).orElseThrow(), sameInstance(declared));
+        assertThat(factory.sourceFor(LayeredRow.class).orElseThrow(), sameInstance(declared));
     }
 
     @Test
@@ -129,16 +131,19 @@ class RepositoryFactoryContractTest {
     void sourceForRoutesPerType() {
         RepositoryFactory factory = new SplitFactory();
 
-        assertThat(factory.sourceFor(ContractRow.class), sameInstance(factory.getSource()));
+        assertThat(factory.sourceFor(ContractRow.class), equalTo(factory.getSource()));
         assertThat(factory.sourceFor(LayeredRow.class), is(not(factory.getSource())));
     }
 
     @Test
-    @DisplayName("the anchored factory scans the anchor's package and holds no origin")
-    void anchoredFactoryScansAndHoldsNone() {
+    @DisplayName("the anchored factory scans the anchor's package and names no origin")
+    void anchoredFactoryScansAndNamesNoOrigin() {
         RepositoryFactory factory = RepositoryFactory.of(ContractRow.class);
 
-        assertThat(factory.getSource(), sameInstance(Source.none()));
+        // Empty is not "no rows" - it says the session's database authors them, and a session that
+        // opened none fails rather than serving an empty repository.
+        assertThat(factory.getSource().isEmpty(), is(true));
+        assertThat(factory.sourceFor(ContractRow.class).isEmpty(), is(true));
         assertThat(factory.getModels().contains(ContractRow.class), is(true));
         assertThat(factory.getModels().contains(LayeredRow.class), is(true));
     }
@@ -146,11 +151,11 @@ class RepositoryFactoryContractTest {
     @Test
     @DisplayName("the anchored factory carries the origin it was given to every type")
     void anchoredFactoryCarriesItsOrigin() {
-        Source declared = Source.none();
+        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
         RepositoryFactory factory = RepositoryFactory.of(ContractRow.class, declared);
 
-        assertThat(factory.getSource(), sameInstance(declared));
-        assertThat(factory.sourceFor(ContractRow.class), sameInstance(declared));
+        assertThat(factory.getSource().orElseThrow(), sameInstance(declared));
+        assertThat(factory.sourceFor(ContractRow.class).orElseThrow(), sameInstance(declared));
     }
 
     @Test

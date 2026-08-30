@@ -67,10 +67,13 @@ class JpaCacheHazelcastTest {
     void setup() {
         sessionManager = new SessionManager();
 
-        JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "jpa_cache_hazelcast_test")
-            .isUsingStatistics()
-            .withDefaultCacheExpiryMs(2000)
-            .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
+        JpaConfig config = JpaConfig.common(
+            H2MemoryDriver.named("jpa_cache_hazelcast_test")
+                .isUsingStatistics()
+                .withDefaultCacheExpiryMs(2000)
+                .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
+                .build()
+        )
             .withRepositoryFactory(
                 RepositoryFactory.of(TestParentModel.class)
             )

@@ -1,22 +1,50 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
+import dev.simplified.persistence.store.RelationalOrigin;
 import org.jetbrains.annotations.NotNull;
 
 /**
- * {@link JpaDriver} implementation for Microsoft SQL Server databases (default port 1433).
+ * A Microsoft SQL Server database, reached over the network and maintained elsewhere.
  */
 @Getter
-public class SqlServerDriver implements JpaDriver {
+public final class SqlServerDriver implements JpaDriver {
 
-    private final int defaultPort = 1433;
+    /**
+     * The port SQL Server listens on unless told otherwise.
+     */
+    private static final int DEFAULT_PORT = 1433;
+
     private final @NotNull String dialectClass = "org.hibernate.dialect.SQLServerDialect";
     private final @NotNull String classPath = "com.microsoft.jdbc.sqlserver.SQLServerDriver";
+    private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.EXTERNAL;
 
-    /** {@inheritDoc} */
-    @Override
-    public @NotNull String getConnectionUrl(@NotNull String host, int port, @NotNull String schema) {
-        return String.format("jdbc:microsoft:sqlserver://%s:%s;DatabaseName=%s", host, port, schema);
+    private SqlServerDriver() {}
+
+    /**
+     * Names a database on the default port.
+     *
+     * @param host the server hostname or address
+     * @param schema the database name
+     * @return the step that takes the credentials
+     */
+    public static @NotNull RelationalOrigin.Authenticating at(@NotNull String host, @NotNull String schema) {
+        return at(host, DEFAULT_PORT, schema);
+    }
+
+    /**
+     * Names a database.
+     *
+     * @param host the server hostname or address
+     * @param port the port the server listens on
+     * @param schema the database name
+     * @return the step that takes the credentials
+     */
+    public static @NotNull RelationalOrigin.Authenticating at(@NotNull String host, int port, @NotNull String schema) {
+        return RelationalOrigin.authenticating(
+            new SqlServerDriver(),
+            String.format("jdbc:microsoft:sqlserver://%s:%s;DatabaseName=%s", host, port, schema)
+        );
     }
 
 }

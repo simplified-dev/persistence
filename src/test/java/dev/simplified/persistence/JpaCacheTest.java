@@ -33,9 +33,7 @@ class JpaCacheTest {
     void setup() {
         this.sessionManager = new SessionManager();
 
-        JpaConfig config = JpaConfig.common(new H2MemoryDriver(), "jpa_cache_test")
-            .isUsingStatistics()
-            .withDefaultCacheExpiryMs(2000)
+        JpaConfig config = JpaConfig.common(H2MemoryDriver.named("jpa_cache_test").isUsingStatistics().withDefaultCacheExpiryMs(2000).build())
             .withRepositoryFactory(RepositoryFactory.of(TestParentModel.class))
             .build();
 

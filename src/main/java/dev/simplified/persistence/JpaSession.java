@@ -1,74 +1,51 @@
 package dev.simplified.persistence;
 
 import com.google.gson.Gson;
-import dev.simplified.annotations.Cleanup;
 import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.gson.GsonSettings;
-import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.store.Relational;
+import dev.simplified.persistence.store.RelationalOrigin;
 import dev.simplified.persistence.store.Source;
 import dev.simplified.persistence.store.WriteRequest;
-import dev.simplified.persistence.type.TypeRegistrar;
-import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
-import dev.simplified.util.Logging;
 import dev.simplified.util.time.Stopwatch;
-import jakarta.persistence.criteria.CriteriaQuery;
-import org.ehcache.core.Ehcache;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
-import org.hibernate.StatelessSession;
-import org.hibernate.Transaction;
-import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.hibernate.boot.Metadata;
-import org.hibernate.boot.MetadataBuilder;
-import org.hibernate.boot.MetadataSources;
-import org.hibernate.boot.registry.StandardServiceRegistry;
-import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
-import org.hibernate.mapping.Column;
-import org.hibernate.mapping.PersistentClass;
-import org.hibernate.mapping.Property;
-import org.hibernate.mapping.SimpleValue;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import javax.cache.CacheManager;
-import javax.cache.Caching;
-import javax.cache.configuration.MutableConfiguration;
-import javax.cache.expiry.Duration;
-import javax.cache.expiry.ModifiedExpiryPolicy;
-import java.lang.reflect.Modifier;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * A fully self-initializing JPA session holding one {@link JpaRepository} per registered type.
+ * A JPA session holding one {@link JpaRepository} per registered type.
  *
- * <p>The {@link JpaConfig#getDriver() driver} decides how much of this class runs. With one, the
- * constructor performs the complete Hibernate bootstrap - building the
- * {@link StandardServiceRegistry}, discovering {@link TypeRegistrar} implementations, constructing
- * {@link Metadata}, opening the {@link SessionFactory} and creating the JCache regions. Without one
- * there is no database to register anything against, so none of that runs and none of it needs to be
- * on the classpath; every type reads through the {@link Source} its factory declares.</p>
+ * <p>The {@link JpaConfig#getDatabase() database} decides how much of this class exists. With one,
+ * {@link Relational} holds the whole Hibernate stack and is the origin for every type no factory
+ * names a source for. Without one there is no database to register anything against, so none of it
+ * runs and none of it needs to be on the classpath; every type reads through the {@link Source} its
+ * factory declares.</p>
  *
  * <p>Typical lifecycle managed by {@link SessionManager}:</p>
  * <ol>
- *     <li><b>Construction</b> - with a driver, builds JCache regions with per-entity TTL, service
- *         registry, metadata, and session factory</li>
+ *     <li><b>Construction</b> - with a database, opens it</li>
  *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per discovered model
  *         and hydrates every one of them</li>
- *     <li>{@link #shutdown()} - clears repositories, shuts down the scheduler and, with a driver,
- *         closes the session factory, destroys the service registry and removes JCache regions</li>
+ *     <li>{@link #shutdown()} - clears repositories, shuts down the scheduler and closes the
+ *         database</li>
  * </ol>
  *
  * <p>Provides repository lookup via {@link #getRepository(Class)}, writes via
- * {@link #write(WriteRequest)}, and - for a session that holds a driver - managed Hibernate access
+ * {@link #write(WriteRequest)}, and - for a session that opened a database - managed Hibernate access
  * via {@link #with(Consumer)} / {@link #with(Function)} and transactional execution via
  * {@link #transaction(Consumer)} / {@link #transaction(Function)}.</p>
  *
@@ -78,13 +55,6 @@ import java.util.function.Function;
  */
 @Getter
 public final class JpaSession {
-
-    /**
-     * JCache TTL is set to this multiple of the refresh interval as a safety net.
-     * Under normal operation the scheduler refreshes proactively; the JCache TTL
-     * only fires if the scheduler misses multiple cycles.
-     */
-    private static final int CACHE_TTL_MULTIPLIER = 2;
 
     /**
      * Cached repositories keyed by their entity class.
@@ -112,26 +82,9 @@ public final class JpaSession {
     private final @NotNull Gson gson;
 
     /**
-     * Assembled Hibernate and HikariCP connection properties, empty without a driver.
+     * The open database, empty when this session opened none.
      */
-    private final @NotNull ConcurrentMap<String, Object> properties;
-
-    /**
-     * Hibernate entity metadata including custom type registrations and column adjustments,
-     * or {@code null} without a driver.
-     */
-    private final @Nullable Metadata metadata;
-
-    /**
-     * The Hibernate session factory opened from {@link #metadata}, or {@code null} without a driver.
-     */
-    private final @Nullable SessionFactory sessionFactory;
-
-    /**
-     * The Hibernate service registry backing {@link #sessionFactory}, or {@code null} without a
-     * driver.
-     */
-    private final @Nullable StandardServiceRegistry serviceRegistry;
+    private final @NotNull Optional<Relational> relational;
 
     /**
      * Timing snapshot of the full constructor bootstrap.
@@ -156,17 +109,11 @@ public final class JpaSession {
     /**
      * Constructs a fully initialized session from the given configuration.
      *
-     * <p>Resolves the model list via {@link RepositoryFactory#getModels()} and, when the config
-     * holds a {@link JpaDriver}, builds JCache regions for query and timestamp caching, assembles
-     * Hibernate properties, creates the {@link StandardServiceRegistry}, discovers and runs
-     * {@link TypeRegistrar} implementations, builds {@link Metadata} (with column length adjustments
-     * for embedded drivers), and opens the {@link SessionFactory}.</p>
+     * <p>Resolves the model list via {@link RepositoryFactory#getModels()} and, when the config names
+     * a {@link RelationalOrigin}, opens it. Without one there is nothing to open, and nothing on a
+     * read path asks the question again.</p>
      *
-     * <p>Without a driver there is nothing to bootstrap: no registry, no metadata, no session
-     * factory and no cache regions. That is the one branch, it is taken here, and nothing on a read
-     * path asks the question again.</p>
-     *
-     * @param config the configuration defining driver, repository factory, and connection settings
+     * @param config the configuration naming the database, the repository factory and the parser
      */
     public JpaSession(@NotNull JpaConfig config) {
         Instant startTime = Instant.now();
@@ -174,254 +121,44 @@ public final class JpaSession {
         this.config = config;
         this.scheduler = new Scheduler();
         this.gson = config.getGsonSettings().create();
-
-        if (config.getDriver().isPresent()) {
-            JpaDriver driver = config.getDriver().orElseThrow();
-
-            // Build JCache regions. The query-results and update-timestamps regions are only
-            // created when query caching is actually enabled - for HAZELCAST_* providers Phase 2d
-            // unconditionally disables query caching, so creating these regions would leave empty
-            // never-used JCache caches sitting on the cluster.
-            boolean queryCacheActive = config.isUsingQueryCache()
-                && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_CLIENT
-                && config.getCacheProvider() != JpaCacheProvider.HAZELCAST_EMBEDDED;
-            if (queryCacheActive) {
-                this.buildCacheConfiguration("default-update-timestamps-region", Duration.ETERNAL);
-                long ttl = config.getQueryResultsTTL();
-                Duration queryDuration = ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl);
-                this.buildCacheConfiguration("default-query-results-region", queryDuration);
-            }
-
-            // Build Hibernate infrastructure
-            this.properties = this.createProperties(driver);
-            this.serviceRegistry = new StandardServiceRegistryBuilder()
-                .applySettings(this.properties)
-                .build();
-            MetadataSources sources = this.createMetadataSources(this.serviceRegistry);
-            this.metadata = this.createMetadata(sources.getMetadataBuilder(), driver);
-            this.sessionFactory = this.metadata.buildSessionFactory();
-        } else {
-            this.properties = Concurrent.<String, Object>newMap().toUnmodifiable();
-            this.serviceRegistry = null;
-            this.metadata = null;
-            this.sessionFactory = null;
-        }
+        this.relational = config.getDatabase()
+            .map(origin -> origin.open(this.models, this.gson, config.getLogLevel()));
 
         this.initialization = Stopwatch.of(startTime);
     }
 
     /**
-     * Creates a JCache configuration for the given entity type with TTL from the type's
-     * {@link Hydration} cadence or the config default, multiplied by
-     * {@link #CACHE_TTL_MULTIPLIER} as a safety net.
+     * The open database, for the paths that cannot run without one.
+     *
+     * @return the database this session opened
+     * @throws JpaException if the session opened none
      */
-    private @NotNull Class<JpaModel> buildCacheConfiguration(@NotNull Class<JpaModel> type) {
-        Hydration hydration = type.getAnnotation(Hydration.class);
-        long expiryMs = hydration != null && hydration.every() > 0
-            ? hydration.unit().toMillis(hydration.every())
-            : this.config.getDefaultCacheExpiryMs();
-
-        long jcacheTtlMs = expiryMs <= 0 ? 0 : expiryMs * CACHE_TTL_MULTIPLIER;
-        Duration duration = jcacheTtlMs <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.MILLISECONDS, jcacheTtlMs);
-        this.buildCacheConfiguration(type.getName(), duration);
-        return type;
+    private @NotNull Relational database() {
+        return this.relational.orElseThrow(
+            () -> new JpaException("Session opened no database, so there is no Hibernate access")
+        );
     }
 
     /**
-     * Creates a JCache configuration with the given name and TTL, reusing existing caches.
+     * The Hibernate entity metadata, for a session that opened a database.
+     *
+     * @return the metadata
+     * @throws JpaException if the session opened none
      */
-    private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
-        CacheManager cacheManager = this.resolveCacheManager();
-
-        if (cacheManager.getCache(cacheName, Object.class, Object.class) != null)
-            return;
-
-        MutableConfiguration<Object, Object> cacheConfiguration = new MutableConfiguration<>()
-            .setStoreByValue(false)
-            .setExpiryPolicyFactory(ModifiedExpiryPolicy.factoryOf(duration));
-
-        cacheManager.createCache(cacheName, cacheConfiguration);
+    public @NotNull Metadata getMetadata() {
+        return this.database().getMetadata();
     }
 
     /**
-     * Resolves the JCache {@link CacheManager} for the {@link JpaCacheProvider} configured
-     * on {@link #config}.
+     * The Hibernate session factory, for a session that opened a database.
      *
-     * <p>Looks up the provider by its fully-qualified class name and, when the provider
-     * declares a non-null {@link JpaCacheProvider#getConfigUri() configUri}, opens the
-     * cache manager against that classpath resource URI. Otherwise the provider's default
-     * cache manager is returned.</p>
-     *
-     * @return the cache manager for the configured provider
-     * @throws javax.cache.CacheException if the provider class is not on the classpath
+     * @return the session factory
+     * @throws JpaException if the session opened none
      */
-    private @NotNull CacheManager resolveCacheManager() {
-        JpaCacheProvider provider = this.config.getCacheProvider();
-        javax.cache.spi.CachingProvider cachingProvider = Caching.getCachingProvider(provider.getProviderClassName());
-
-        if (provider.getConfigUri() == null)
-            return cachingProvider.getCacheManager();
-
-        try {
-            return cachingProvider.getCacheManager(
-                new java.net.URI(provider.getConfigUri()),
-                cachingProvider.getDefaultClassLoader()
-            );
-        } catch (java.net.URISyntaxException ex) {
-            throw new JpaException(ex, "Invalid cache provider config URI '%s'", provider.getConfigUri());
-        }
+    public @NotNull SessionFactory getSessionFactory() {
+        return this.database().getSessionFactory();
     }
 
-    /**
-     * Assembles Hibernate and HikariCP properties from the {@link JpaConfig}.
-     *
-     * @param driver the driver the session connects through
-     */
-    private @NotNull ConcurrentMap<String, Object> createProperties(@NotNull JpaDriver driver) {
-        ConcurrentMap<String, Object> properties = Concurrent.newMap();
-
-        if (driver.isEmbedded()) {
-            // Embedded: create schema fresh on each startup; no connection pool needed
-            properties.put("hibernate.hbm2ddl.auto", "create-drop");
-        } else {
-            // External RDBMS: full connection pool
-            properties.put("hibernate.connection.username", this.config.getUser());
-            properties.put("hibernate.connection.password", this.config.getPassword());
-            properties.put("hibernate.connection.provider_class", "org.hibernate.hikaricp.internal.HikariCPConnectionProvider");
-            properties.put("hikari.maximumPoolSize", 20);
-        }
-
-        properties.put("hibernate.dialect", driver.getDialectClass());
-        properties.put("hibernate.connection.driver_class", driver.getClassPath());
-        properties.put("hibernate.globally_quoted_identifiers", true);
-
-        properties.put("hibernate.connection.url", driver.getConnectionUrl(
-            this.config.getHost(),
-            this.config.getPort(),
-            this.config.getSchema()
-        ));
-
-        properties.put("hibernate.jdbc.log.warnings", this.config.isLogLevel(Logging.Level.WARN));
-        properties.put("hibernate.show_sql", this.config.isLogLevel(Logging.Level.DEBUG));
-        properties.put("hibernate.format_sql", this.config.isLogLevel(Logging.Level.TRACE));
-        properties.put("hibernate.highlight_sql", this.config.isLogLevel(Logging.Level.TRACE));
-        properties.put("hibernate.use_sql_comments", this.config.isLogLevel(Logging.Level.DEBUG));
-
-        properties.put("hibernate.generate_statistics", this.config.isUsingStatistics());
-
-        properties.put("hibernate.order_inserts", true);
-        properties.put("hibernate.order_updates", true);
-
-        properties.put("hibernate.jdbc.batch_size", 100);
-        properties.put("hibernate.jdbc.fetch_size", 400);
-        properties.put("hibernate.jdbc.use_get_generated_keys", true);
-
-        // Cache
-        properties.put("hibernate.cache.region.factory_class", "jcache");
-        properties.put("hibernate.cache.use_reference_entries", true);
-        properties.put("hibernate.cache.use_structured_entries", this.config.isLogLevel(Logging.Level.DEBUG));
-        // Phase 2d: query cache is unconditionally disabled for HAZELCAST_* providers because
-        // the Hibernate query results region wraps results in QueryResultsCacheImpl$CacheItem
-        // (Serializable), which Hazelcast routes through ObjectOutputStream - and that stream
-        // walks the object graph via Java's default protocol with no hook for Hazelcast's
-        // SerializationService. The lazy stream() rewrite (also Phase 2d) makes the query
-        // results cache vestigial for the application path, so disabling it here removes the
-        // last code path that touches it. EhCache callers are unaffected.
-        JpaCacheProvider cacheProvider = this.config.getCacheProvider();
-        boolean queryCacheEnabled = this.config.isUsingQueryCache()
-            && cacheProvider != JpaCacheProvider.HAZELCAST_CLIENT
-            && cacheProvider != JpaCacheProvider.HAZELCAST_EMBEDDED;
-        properties.put("hibernate.cache.use_query_cache", queryCacheEnabled);
-        properties.put("hibernate.cache.use_second_level_cache", this.config.isUsing2ndLevelCache());
-        properties.put("hibernate.javax.cache.missing_cache_strategy", this.config.getMissingCacheStrategy().getExternalRepresentation());
-
-        // Pin the JCache provider for Hibernate's internal JCacheRegionFactory so it does not
-        // call the no-arg Caching.getCachingProvider() lookup, which throws when more than one
-        // provider sits on the runtime classpath (e.g. EhCache + Hazelcast in the test suite).
-        // Property names use the hibernate.javax.cache.* prefix per ConfigSettings.PROP_PREFIX
-        // in hibernate-jcache 7.3 - the jakarta-prefixed equivalents are not honored.
-        properties.put("hibernate.javax.cache.provider", cacheProvider.getProviderClassName());
-        if (cacheProvider.getConfigUri() != null)
-            properties.put("hibernate.javax.cache.uri", cacheProvider.getConfigUri());
-
-        if (this.config.getCacheConcurrencyStrategy() != CacheConcurrencyStrategy.NONE)
-            properties.put("hibernate.cache.default_cache_concurrency_strategy", this.config.getCacheConcurrencyStrategy().toAccessType().getExternalName());
-
-        return properties.toUnmodifiable();
-    }
-
-    /**
-     * Registers annotated entity classes and configures per-entity cache logging.
-     */
-    private @NotNull MetadataSources createMetadataSources(@NotNull StandardServiceRegistry serviceRegistry) {
-        MetadataSources metadataSources = new MetadataSources(serviceRegistry);
-
-        this.getModels()
-            .stream()
-            .map(this::buildCacheConfiguration)
-            .peek(metadataSources::addAnnotatedClass)
-            .forEach(modelType -> Logging.setLevel(
-                String.format("%s-%s", Ehcache.class, modelType.getName()),
-                this.config.getLogLevel()
-            ));
-
-        return metadataSources;
-    }
-
-    /**
-     * Discovers {@link TypeRegistrar} implementations via classpath scanning, scans entity
-     * fields for custom type annotations, registers the types with the {@link MetadataBuilder},
-     * builds the {@link Metadata}, post-processes type bindings, and adjusts column lengths
-     * for embedded drivers.
-     *
-     * @param metadataBuilder the builder to register custom types with
-     * @param driver the driver the session connects through
-     * @return the fully built and post-processed metadata
-     */
-    private @NotNull Metadata createMetadata(@NotNull MetadataBuilder metadataBuilder, @NotNull JpaDriver driver) {
-        ConcurrentList<TypeRegistrar> registrars = Reflection.getResources()
-            .filterPackage(TypeRegistrar.class)
-            .getSubtypesOf(TypeRegistrar.class)
-            .stream()
-            .filter(cls -> !cls.isInterface() && !Modifier.isAbstract(cls.getModifiers()))
-            .map(cls -> (TypeRegistrar) new Reflection<>(cls).newInstance())
-            .collect(Concurrent.toList());
-
-        registrars.forEach(registrar -> {
-            registrar.scan(this.getGson(), this.getModels());
-            registrar.register(metadataBuilder);
-        });
-
-        Metadata metadata = metadataBuilder.build();
-        registrars.forEach(registrar -> registrar.postProcess(metadata));
-
-        if (driver.isEmbedded())
-            adjustColumnLength(metadata);
-
-        return metadata;
-    }
-
-    /**
-     * Widens all default-length ({@link Column#getLength() 255}) {@code VARCHAR} columns
-     * to 1,000,000, preventing truncation of data whose lengths are unpredictable.
-     *
-     * <p>Only an embedded driver creates its own schema, so only an embedded driver is asked for
-     * this. Elsewhere column sizes are governed by the production schema.
-     *
-     * @param metadata the built Hibernate metadata whose column definitions are adjusted in place
-     */
-    private static void adjustColumnLength(@NotNull Metadata metadata) {
-        for (PersistentClass pc : metadata.getEntityBindings()) {
-            for (Property prop : pc.getProperties()) {
-                if (prop.getValue() instanceof SimpleValue sv) {
-                    for (Column col : sv.getColumns()) {
-                        if (col.getLength() != null && col.getLength() == 255L)
-                            col.setLength(1_000_000L);
-                    }
-                }
-            }
-        }
-    }
 
     /**
      * Creates a {@link JpaRepository} for each discovered model via the configured
@@ -463,71 +200,21 @@ public final class JpaSession {
     /**
      * Creates the repository for one entity type, reading its origin off the configured factory.
      *
+     * <p>A factory naming no source for a type is saying the rows are the database's, so the open
+     * database stands in. Substituting once, here, is what lets every repository hold a generation and
+     * answer from an index without a read ever asking where its rows came from.
+     *
      * @param type the entity class
      * @param <T> the entity type
      * @return the repository for that type
+     * @throws JpaException if the type names no origin and the session opened no database
      */
     private <T extends JpaModel> @NotNull JpaRepository<T> createRepository(@NotNull Class<T> type) {
-        Source declared = this.config.getRepositoryFactory().sourceFor(type);
-        return new JpaRepository<>(this, type, declared == Source.none() ? this.relational() : declared);
-    }
+        Source declared = this.config.getRepositoryFactory()
+            .sourceFor(type)
+            .orElseGet(this::database);
 
-    /**
-     * The source for types whose rows the database itself authors.
-     *
-     * <p>A factory that declares no origin for a type is saying the database is the origin, so this
-     * stands in for {@link Source#none()} at construction. Substituting once, here, is what lets every
-     * repository hold a generation and answer from an index without a read ever asking where its rows
-     * came from.
-     *
-     * @return a source reading whole tables through Hibernate
-     * @throws JpaException if the session holds no driver, so there is no database to be the origin
-     */
-    private @NotNull Source relational() {
-        if (this.sessionFactory == null)
-            throw new JpaException("A type whose rows the database authors needs a driver");
-
-        return new Source.Writable() {
-
-            @Override
-            public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
-                return JpaSession.this.with(hibernate -> {
-                    CriteriaQuery<T> query = hibernate.getCriteriaBuilder().createQuery(type);
-                    query.select(query.from(type));
-                    return Concurrent.newUnmodifiableList(hibernate.createQuery(query).getResultList());
-                });
-            }
-
-            /**
-             * {@inheritDoc}
-             *
-             * <p>A relational origin always accepts writes. Refusing one is the database's job, through
-             * the permissions the connection was opened under, rather than this library's.
-             */
-            @Override
-            public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
-                if (request.rows().isEmpty())
-                    return;
-
-                if (request.operation() == WriteRequest.Operation.DELETE) {
-                    JpaSession.this.transaction((Consumer<Session>) hibernate -> request.rows().forEach(hibernate::remove));
-                    return;
-                }
-
-                // upsertMultiple bypasses dirty checking entirely, which is what keeps a row carrying a
-                // read-only join column from raising HHH000502 when its association is not loaded.
-                try (StatelessSession stateless = JpaSession.this.factory().openStatelessSession()) {
-                    stateless.getTransaction().begin();
-                    stateless.upsertMultiple(request.rows());
-                    stateless.getTransaction().commit();
-                } catch (JpaException jpaException) {
-                    throw jpaException;
-                } catch (Exception exception) {
-                    throw new JpaException(exception, "Failed to write '%s'", request.type().getName());
-                }
-            }
-
-        };
+        return new JpaRepository<>(this, type, declared);
     }
 
     /**
@@ -652,20 +339,7 @@ public final class JpaSession {
     }
 
     /**
-     * The Hibernate session factory, for the paths that cannot run without one.
-     *
-     * @return the session factory this session was opened with
-     * @throws JpaException if the session holds no driver
-     */
-    private @NotNull SessionFactory factory() {
-        if (this.sessionFactory == null)
-            throw new JpaException("Session holds no driver, so there is no Hibernate access");
-
-        return this.sessionFactory;
-    }
-
-    /**
-     * Opens a new Hibernate {@link Session} from the underlying {@link SessionFactory}.
+     * Opens a new Hibernate {@link Session} from the open database.
      *
      * <p>The caller owns the returned session and must close it. This is the escape hatch a type
      * outside {@link RepositoryFactory#getModels()} is reached through - a registered type answers
@@ -673,30 +347,49 @@ public final class JpaSession {
      * {@link #write(WriteRequest)}.
      *
      * @return a freshly opened session
-     * @throws JpaException if the session holds no driver
+     * @throws JpaException if the session opened no database
      */
     public @NotNull Session openSession() {
-        return this.factory().openSession();
+        return this.database().openSession();
     }
 
     /**
-     * Opens a managed {@link Session}, executes the consumer within a transaction
-     * (begin + commit), and auto-closes the session.
+     * Opens a managed {@link Session}, passes it to the consumer, and auto-closes it.
+     *
+     * @param consumer the operation to perform with the session
+     * @throws JpaException if the session cannot be opened or the operation fails
+     */
+    public void with(@NotNull Consumer<Session> consumer) {
+        this.database().with(consumer);
+    }
+
+    /**
+     * Opens a managed {@link Session}, passes it to the function, returns the result, and
+     * auto-closes it.
+     *
+     * @param function the operation to perform with the session
+     * @param <R> the return type
+     * @return the result produced by the function
+     * @throws JpaException if the session cannot be opened or the operation fails
+     */
+    public <R> R with(@NotNull Function<Session, R> function) {
+        return this.database().with(function);
+    }
+
+    /**
+     * Opens a managed {@link Session}, executes the consumer within a transaction, and auto-closes
+     * it.
      *
      * @param consumer the transactional operation to perform
      * @throws JpaException if the session cannot be opened or the transaction fails
      */
     public void transaction(@NotNull Consumer<Session> consumer) {
-        this.with(session -> {
-            Transaction transaction = session.beginTransaction();
-            consumer.accept(session);
-            transaction.commit();
-        });
+        this.database().transaction(consumer);
     }
 
     /**
-     * Opens a managed {@link Session}, executes the function within a transaction
-     * (begin + commit), returns the result, and auto-closes the session.
+     * Opens a managed {@link Session}, executes the function within a transaction, returns the
+     * result, and auto-closes it.
      *
      * @param function the transactional operation to perform
      * @param <R> the return type
@@ -704,21 +397,14 @@ public final class JpaSession {
      * @throws JpaException if the session cannot be opened or the transaction fails
      */
     public <R> R transaction(@NotNull Function<Session, R> function) {
-        return this.with(session -> {
-            Transaction transaction = session.beginTransaction();
-            R result = function.apply(session);
-            transaction.commit();
-            return result;
-        });
+        return this.database().transaction(function);
     }
 
     /**
      * Performs an orderly shutdown of this session.
      *
-     * <p>Marks the session as inactive, clears all repositories and shuts down the internal
-     * {@link Scheduler}. With a driver it then closes the {@link SessionFactory} (which drops the
-     * schema for embedded drivers), destroys the {@link StandardServiceRegistry}, and removes all
-     * JCache regions created during construction.</p>
+     * <p>Marks the session as inactive, clears all repositories, shuts down the internal
+     * {@link Scheduler} and closes the database, if one was opened.</p>
      *
      * <p>After shutdown, {@link #getRepository(Class)} and {@link #hasRepository(Class)}
      * will reject or deny all lookups. The session object should be discarded.</p>
@@ -727,60 +413,7 @@ public final class JpaSession {
         this.active = false;
         this.repositories.clear();
         this.scheduler.shutdown();
-
-        if (this.sessionFactory == null)
-            return;
-
-        this.sessionFactory.close();
-        StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
-
-        CacheManager cacheManager = this.resolveCacheManager();
-        this.getModels().forEach(model -> {
-            if (cacheManager.getCache(model.getName(), Object.class, Object.class) != null)
-                cacheManager.destroyCache(model.getName());
-        });
-        // Match the conditional region creation in the constructor: skip destroy when the
-        // region was never created (e.g. HAZELCAST_* path with Phase 2d query cache disable).
-        // The defensive null checks here would already make this a no-op, but the explicit
-        // guard avoids confusing log output on Hazelcast clusters.
-        if (cacheManager.getCache("default-update-timestamps-region", Object.class, Object.class) != null)
-            cacheManager.destroyCache("default-update-timestamps-region");
-        if (cacheManager.getCache("default-query-results-region", Object.class, Object.class) != null)
-            cacheManager.destroyCache("default-query-results-region");
-    }
-
-    /**
-     * Opens a managed {@link Session}, passes it to the consumer, and auto-closes
-     * the session when the consumer completes.
-     *
-     * @param consumer the operation to perform with the session
-     * @throws JpaException if the session cannot be opened or the operation fails
-     */
-    public void with(@NotNull Consumer<Session> consumer) {
-        try {
-            @Cleanup Session session = this.openSession();
-            consumer.accept(session);
-        } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
-    }
-
-    /**
-     * Opens a managed {@link Session}, passes it to the function, returns the result,
-     * and auto-closes the session when the function completes.
-     *
-     * @param function the operation to perform with the session
-     * @param <R> the return type
-     * @return the result produced by the function
-     * @throws JpaException if the session cannot be opened or the operation fails
-     */
-    public <R> R with(@NotNull Function<Session, R> function) {
-        try {
-            @Cleanup Session session = this.openSession();
-            return function.apply(session);
-        } catch (Exception exception) {
-            throw new JpaException(exception);
-        }
+        this.relational.ifPresent(Relational::close);
     }
 
 }

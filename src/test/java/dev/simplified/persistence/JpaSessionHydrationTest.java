@@ -39,11 +39,22 @@ class JpaSessionHydrationTest {
      * Connects a session over the two test models reading from the given source.
      */
     private @NotNull JpaSession connect(@NotNull String schema, @NotNull Source source) {
+        return this.connect(schema, RepositoryFactory.of(TestParentModel.class, source));
+    }
+
+    /**
+     * Connects a session over the two test models reading from the database it opens.
+     */
+    private @NotNull JpaSession connect(@NotNull String schema) {
+        return this.connect(schema, RepositoryFactory.of(TestParentModel.class));
+    }
+
+    private @NotNull JpaSession connect(@NotNull String schema, @NotNull RepositoryFactory factory) {
         this.sessionManager = new SessionManager();
 
         return this.sessionManager.connect(
-            JpaConfig.common(new H2MemoryDriver(), schema)
-                .withRepositoryFactory(RepositoryFactory.of(TestParentModel.class, source))
+            JpaConfig.common(H2MemoryDriver.named(schema).build())
+                .withRepositoryFactory(factory)
                 .build()
         );
     }
@@ -95,7 +106,9 @@ class JpaSessionHydrationTest {
     @Test
     @DisplayName("every type reports a published generation once connected")
     void everyTypeIsCurrentAfterConnect() {
-        JpaSession session = this.connect("hydration_states", Source.none());
+        // No source is named, so the rows are the database's, and the session substitutes the one it
+        // opened. An empty table still publishes a generation.
+        JpaSession session = this.connect("hydration_states");
 
         assertThat(session.getRepository(TestParentModel.class).getState(), equalTo(HydrationState.CURRENT));
         assertThat(session.getRepository(TestChildModel.class).getState(), equalTo(HydrationState.CURRENT));
