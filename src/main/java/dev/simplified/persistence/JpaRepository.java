@@ -252,7 +252,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
             String idProperty = idPropertyOf(field);
             Class<? extends JpaModel> target = targetOf(field);
             Repository<? extends JpaModel> repository = this.session.getRepository(target);
-            Object held = reflection.getField(idProperty).get(entity);
+            Object held = unwrapped(reflection.getField(idProperty).get(entity));
 
             if (Collection.class.isAssignableFrom(field.getFieldType())) {
                 Collection<String> ids = (Collection<String>) held;
@@ -272,9 +272,22 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
                 continue;
             }
 
-            if (held != null)
-                field.set(entity, keyed(repository).get(String.valueOf(held)));
+            field.set(entity, held == null ? null : keyed(repository).get(String.valueOf(held)));
         }
+    }
+
+    /**
+     * Reads the id a property carries, whether it holds one outright or wraps it.
+     *
+     * <p>A link that may resolve to nothing declares its id as an {@link Optional}, and the id inside
+     * it is the key, not the wrapper - {@code String.valueOf} on the wrapper would produce
+     * {@code Optional[HUB]} and miss every row.
+     *
+     * @param held the value the id property holds
+     * @return the id, or {@code null} when the property carries none
+     */
+    private static @Nullable Object unwrapped(@Nullable Object held) {
+        return held instanceof Optional<?> optional ? optional.orElse(null) : held;
     }
 
     /**
@@ -313,7 +326,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private static @NotNull ConcurrentSet<FieldAccessor<?>> links(@NotNull Class<?> type) {
         return new Reflection<>(type).getFields()
             .stream()
-            .filter(field -> field.hasAnnotation(Linked.class) || field.hasAnnotation(ForeignIds.class))
+            .filter(field -> field.hasAnnotation(Linked.class))
             .collect(Concurrent.toSet());
     }
 
@@ -324,9 +337,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * @return the name of the property carrying the id or ids
      */
     private static @NotNull String idPropertyOf(@NotNull FieldAccessor<?> field) {
-        return field.getAnnotation(Linked.class)
-            .map(Linked::value)
-            .orElseGet(() -> field.getAnnotation(ForeignIds.class).orElseThrow().value());
+        return field.getAnnotation(Linked.class).orElseThrow().value();
     }
 
     /**

@@ -12,11 +12,11 @@ import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.store.Source;
 import dev.simplified.persistence.store.WriteRequest;
 import dev.simplified.persistence.type.TypeRegistrar;
-import jakarta.persistence.criteria.CriteriaQuery;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
 import dev.simplified.util.Logging;
 import dev.simplified.util.time.Stopwatch;
+import jakarta.persistence.criteria.CriteriaQuery;
 import org.ehcache.core.Ehcache;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -92,7 +92,7 @@ public final class JpaSession {
     private final @NotNull ConcurrentMap<Class<? extends JpaModel>, Repository<? extends JpaModel>> repositories = Concurrent.newMap();
 
     /**
-     * Topologically sorted entity classes discovered from the {@link RepositoryFactory}.
+     * The entity classes discovered from the {@link RepositoryFactory}.
      */
     private final @NotNull ConcurrentList<Class<JpaModel>> models;
 

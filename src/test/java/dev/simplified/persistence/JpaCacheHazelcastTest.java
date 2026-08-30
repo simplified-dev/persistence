@@ -17,7 +17,6 @@ import org.junit.jupiter.api.TestInstance;
 
 import javax.cache.Caching;
 import javax.cache.spi.CachingProvider;
-
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

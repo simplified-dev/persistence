@@ -122,8 +122,10 @@ class JpaSessionHydrationTest {
         );
 
         // The failure has to name the type, because a pass over every model that reports only "boom"
-        // says nothing about which origin is down.
-        assertThat(thrown.getMessage().contains(TestParentModel.class.getName()), equalTo(true));
+        // says nothing about which origin is down. The pass aborts on the first type it reaches, and
+        // the registration order is the discovery order rather than anything this test chooses.
+        String firstRead = RepositoryFactory.resolveModels(TestParentModel.class).getFirst().getName();
+        assertThat(thrown.getMessage().contains(firstRead), equalTo(true));
     }
 
 }

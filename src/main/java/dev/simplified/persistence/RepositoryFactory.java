@@ -1,19 +1,12 @@
 package dev.simplified.persistence;
 
+import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.collection.sort.Graph;
 import dev.simplified.persistence.store.Source;
 import dev.simplified.reflection.Reflection;
-import jakarta.persistence.ManyToMany;
-import jakarta.persistence.OneToMany;
-import jakarta.persistence.OneToOne;
 import org.jetbrains.annotations.NotNull;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.util.Arrays;
-import java.util.stream.Stream;
+import java.util.Comparator;
 
 /**
  * What a session needs to build its repositories: the types it holds and where their rows come from.
@@ -35,7 +28,7 @@ import java.util.stream.Stream;
 public interface RepositoryFactory {
 
     /**
-     * Topologically sorted entity classes this factory holds repositories for.
+     * The entity classes this factory holds repositories for.
      */
     @NotNull ConcurrentList<Class<JpaModel>> getModels();
 
@@ -92,78 +85,24 @@ public interface RepositoryFactory {
     }
 
     /**
-     * Discovers all {@link JpaModel} implementations via classpath scanning scoped to
-     * the given anchor class's package and returns them topologically sorted by
-     * inter-entity dependencies.
+     * Discovers all {@link JpaModel} implementations via classpath scanning scoped to the given
+     * anchor class's package, in a stable order.
      *
-     * <p>Dependencies are inferred from declared fields: direct {@link JpaModel} field types
-     * and {@link JpaModel} type arguments of parameterized fields (e.g.
-     * {@code ConcurrentList<SomeModel>}) are treated as edges in the dependency graph.
-     * {@linkplain #isInverseSide(Field) Inverse sides} of bidirectional associations are excluded,
-     * because the entity that owns the foreign key is the one that constrains ordering.
+     * <p>The order is by class name and carries no meaning. A hydration reads every type and only
+     * then links every type, so nothing needs a parent to precede its children and there is no
+     * dependency graph to sort - which is also what stops two types that reach each other from
+     * reading as a cycle.
      *
      * @param anchor the class whose package scopes the scan
-     * @return a topologically sorted list of discovered entity classes
-     * @throws IllegalStateException if the entities depend on each other cyclically
+     * @return the discovered entity classes, ordered by name
      */
-    @SuppressWarnings("unchecked")
     static @NotNull ConcurrentList<Class<JpaModel>> resolveModels(@NotNull Class<? extends JpaModel> anchor) {
-        return Graph.<Class<JpaModel>>builder()
-            .withValues(
-                Reflection.getResources()
-                    .filterPackage(anchor)
-                    .getTypesOf(JpaModel.class)
-            )
-            .withEdgeFunction(type -> Arrays.stream(type.getDeclaredFields())
-                .filter(field -> !isInverseSide(field))
-                .flatMap(field -> {
-                    Type genericType = field.getGenericType();
-
-                    if (genericType instanceof ParameterizedType pt)
-                        return Arrays.stream(pt.getActualTypeArguments())
-                            .filter(arg -> arg instanceof Class && JpaModel.class.isAssignableFrom((Class<?>) arg))
-                            .map(arg -> (Class<JpaModel>) arg);
-
-                    Class<?> fieldType = field.getType();
-
-                    if (JpaModel.class.isAssignableFrom(fieldType))
-                        return Stream.of((Class<JpaModel>) fieldType);
-
-                    return Stream.empty();
-                })
-            )
-            .build()
-            .linearTopologicalSort();
-    }
-
-    /**
-     * Returns whether a field is the inverse side of a bidirectional association.
-     *
-     * <p>An inverse side names the field that owns the association through {@code mappedBy}, so the
-     * foreign key belongs to the other entity and so does the only ordering constraint. Reading it as
-     * a dependency asserts the reverse of the truth - the owning side already contributes the correct
-     * edge - and the two together read as a cycle.
-     *
-     * <p>A relationship without {@code mappedBy} is an owning side and is left alone, including a
-     * unidirectional {@code @OneToMany}.
-     *
-     * @param field the declared field to test
-     * @return {@code true} when another entity owns the association
-     */
-    private static boolean isInverseSide(@NotNull Field field) {
-        OneToMany oneToMany = field.getAnnotation(OneToMany.class);
-
-        if (oneToMany != null)
-            return !oneToMany.mappedBy().isEmpty();
-
-        OneToOne oneToOne = field.getAnnotation(OneToOne.class);
-
-        if (oneToOne != null)
-            return !oneToOne.mappedBy().isEmpty();
-
-        ManyToMany manyToMany = field.getAnnotation(ManyToMany.class);
-
-        return manyToMany != null && !manyToMany.mappedBy().isEmpty();
+        return Reflection.getResources()
+            .filterPackage(anchor)
+            .getTypesOf(JpaModel.class)
+            .stream()
+            .sorted(Comparator.comparing(Class::getName))
+            .collect(Concurrent.toUnmodifiableList());
     }
 
 }
