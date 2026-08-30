@@ -13,7 +13,6 @@ import dev.simplified.persistence.store.Source;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;
-import jakarta.persistence.Id;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,6 +20,7 @@ import java.lang.reflect.ParameterizedType;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -224,8 +224,16 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
         if (this.state == HydrationState.FAILED || this.state == HydrationState.DEGRADED)
             return;
 
-        if (this.hasLinks())
-            this.rows.forEach(this::resolveLinks);
+        if (this.hasLinks()) {
+            Reflection<?> reflection = new Reflection<>(this.type);
+
+            // One lookup per link, built once for the whole generation. Building it per row instead
+            // would re-index the target's whole table for every row of this one.
+            ConcurrentMap<FieldAccessor<?>, ConcurrentMap<String, ? extends JpaModel>> lookups = Concurrent.newMap();
+            links(this.type).forEach(field -> lookups.put(field, this.lookupFor(targetOf(field))));
+
+            this.rows.forEach(row -> this.resolveLinks(row, reflection, lookups));
+        }
 
         this.hydratedAt = Instant.now();
         this.state = HydrationState.CURRENT;
@@ -240,19 +248,34 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Resolves every link on one row against the repositories holding their targets.
+     * Indexes a target type's held rows by their key.
+     *
+     * @param target the type being linked to
+     * @param <M> the target entity type
+     * @return the target's rows keyed by their stringified id
+     */
+    private <M extends JpaModel> @NotNull ConcurrentMap<String, M> lookupFor(@NotNull Class<M> target) {
+        Repository<M> repository = this.session.getRepository(target);
+        return JpaModel.keyed(target, repository.getRows());
+    }
+
+    /**
+     * Resolves every link on one row against the lookups built for this generation.
      *
      * @param entity the row to fill in
+     * @param reflection the reflection over this repository's type
+     * @param lookups the target rows, keyed, one entry per linking field
      */
     @SuppressWarnings("unchecked")
-    private void resolveLinks(@NotNull T entity) {
-        Reflection<?> reflection = new Reflection<>(this.type);
-
-        for (FieldAccessor<?> field : links(this.type)) {
-            String idProperty = idPropertyOf(field);
-            Class<? extends JpaModel> target = targetOf(field);
-            Repository<? extends JpaModel> repository = this.session.getRepository(target);
-            Object held = unwrapped(reflection.getField(idProperty).get(entity));
+    private void resolveLinks(
+        @NotNull T entity,
+        @NotNull Reflection<?> reflection,
+        @NotNull ConcurrentMap<FieldAccessor<?>, ConcurrentMap<String, ? extends JpaModel>> lookups
+    ) {
+        for (Map.Entry<FieldAccessor<?>, ConcurrentMap<String, ? extends JpaModel>> link : lookups) {
+            FieldAccessor<?> field = link.getKey();
+            ConcurrentMap<String, ? extends JpaModel> lookup = link.getValue();
+            Object held = unwrapped(reflection.getField(idPropertyOf(field)).get(entity));
 
             if (Collection.class.isAssignableFrom(field.getFieldType())) {
                 Collection<String> ids = (Collection<String>) held;
@@ -262,17 +285,15 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
                     continue;
                 }
 
-                ConcurrentMap<String, ? extends JpaModel> lookup = keyed(repository);
-                ConcurrentList<JpaModel> resolved = ids.stream()
+                field.set(entity, ids.stream()
                     .map(lookup::get)
                     .filter(Objects::nonNull)
-                    .collect(Concurrent.toList());
+                    .collect(Concurrent.toList()));
 
-                field.set(entity, resolved);
                 continue;
             }
 
-            field.set(entity, held == null ? null : keyed(repository).get(String.valueOf(held)));
+            field.set(entity, held == null ? null : lookup.get(String.valueOf(held)));
         }
     }
 
@@ -288,33 +309,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      */
     private static @Nullable Object unwrapped(@Nullable Object held) {
         return held instanceof Optional<?> optional ? optional.orElse(null) : held;
-    }
-
-    /**
-     * Indexes one repository's rows by their identifier.
-     *
-     * @param repository the repository whose rows are being reached into
-     * @return the rows keyed by their stringified identifier
-     */
-    private static @NotNull ConcurrentMap<String, JpaModel> keyed(@NotNull Repository<? extends JpaModel> repository) {
-        FieldAccessor<?> id = new Reflection<>(repository.getType()).getFields()
-            .stream()
-            .filter(field -> field.hasAnnotation(Id.class))
-            .findFirst()
-            .orElseThrow(() -> new JpaException("No @Id field found on entity: %s", repository.getType().getName()));
-
-        ConcurrentMap<String, JpaModel> keyed = Concurrent.newMap();
-
-        for (JpaModel row : repository.getRows()) {
-            Object value = id.get(row);
-
-            // Two rows stringifying to one id is a corpus mistake either way, and the first is the
-            // one a reader scanning the table in order would have found.
-            if (value != null)
-                keyed.putIfAbsent(String.valueOf(value), row);
-        }
-
-        return keyed;
     }
 
     /**
