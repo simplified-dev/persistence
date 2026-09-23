@@ -115,6 +115,20 @@ closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa
 > - Type: **GAP**
 > - Status: **OPEN** - the startup wait and the reader contract are both unbuilt
 
+> #### A failed `connect` leaves its session registered
+> `SessionManager.connect` adds the session to `sessions` before calling `cacheRepositories()`, and
+> nothing removes it when that call throws. The exception reaches the caller, but the session stays in
+> the registry: `getRepository` and `write` still reach its half-hydrated repositories, no refresh tick
+> was ever scheduled to repair them, and nothing shuts down its scheduler or closes its database.
+> `isRegistered` still matches its config, so a second `connect` with the same config is refused as
+> already active; recovering takes an explicit `shutdown(config)` first.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/SessionManager.java` - `connect(JpaConfig)` at
+>   `:44-52`; `src/main/java/dev/simplified/persistence/JpaSession.java` - `cacheRepositories()` at
+>   `:171-198`
+> - Type: **BUG**
+> - Status: **OPEN** - found tracing the entry above, not yet fixed
+
 > #### `bot` does not build, for two reasons that predate this work
 > `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so the three write sites migrated on
 > this branch are unverified beyond review.
