@@ -71,6 +71,50 @@ closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa
 > - Type: **RISK**
 > - Status: **OPEN** - the policy is undecided, per spine §12
 
+> #### `JpaRepository` still answers `getInitialLoad()` and `getLastRefresh()`
+> `01-contracts.md` §2 puts neither on a repository: cadence is the hydrator's concern, and what a
+> reader needs - whether the type is usable and how old it is - is `getState()` plus
+> `getHydratedAt()`. The prior pack settled the same deletion for `getInitialLoad()` (O17 in
+> `notes/query-redesign/34-decisions-settled.md`). `Repository` matches the contract; `JpaRepository`
+> does not, because its class-level `@Getter` generates a public accessor for every field, the
+> `initialLoad` and `lastRefresh` timers included. Both are reachable through the concrete type, and
+> `JpaCacheTest` and `JpaCacheHazelcastTest` assert on `getInitialLoad()`.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java` - class `@Getter` at `:45`,
+>   `initialLoad` at `:103`, `lastRefresh` at `:108`;
+>   `src/test/java/dev/simplified/persistence/JpaCacheTest.java:55-56`;
+>   `src/test/java/dev/simplified/persistence/JpaCacheHazelcastTest.java:97-98`
+> - Type: **GAP**
+> - Status: **OPEN** - settled by both design packs, not yet applied
+
+> #### `@Hydration(blocking = false)` changes nothing, and a reader never blocks
+> `01-contracts.md` §6 gives `blocking()` one job - whether `SessionManager.connect(...)` waits for a
+> type's first generation before returning - and gives a reader a fixed contract: block on
+> `UNHYDRATED` and `HYDRATING`, throw on `FAILED`, return on everything else. Only the `FAILED` throw
+> is built. `JpaRepository` reads the annotation into `blocking` and nothing reads the field, because
+> `JpaSession.cacheRepositories()` hydrates every registered type on the calling thread before it
+> returns, so there is no startup for a non-blocking type to skip. The prior pack's O2 - first
+> hydration off the calling thread - is the same unbuilt piece.
+>
+> `getRows()` returns what it holds in every state but `FAILED`, so a repository that has not read
+> answers an empty list, and one that has read but not linked answers rows whose `@Linked` fields are
+> still empty. Both are reachable today, because `SessionManager.connect` registers the session before
+> `cacheRepositories()` runs:
+>
+> - a thread calling `SessionManager.getRepository` while another is connecting gets a repository
+>   that has not finished hydrating
+> - when a first hydration throws, the session stays registered: the failing type answers `FAILED`,
+>   the types the loop had not reached stay `UNHYDRATED` and answer empty, and the types it had
+>   reached stay `HYDRATING` with their links unresolved
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java` - `blocking` at `:83`,
+>   read at `:127`, `getRows()` at `:164-169`;
+>   `src/main/java/dev/simplified/persistence/JpaSession.java` - `cacheRepositories()` at `:171-198`,
+>   `hydrate(Iterable)` at `:232-243`;
+>   `src/main/java/dev/simplified/persistence/SessionManager.java` - `connect(JpaConfig)` at `:44-52`
+> - Type: **GAP**
+> - Status: **OPEN** - the startup wait and the reader contract are both unbuilt
+
 > #### `bot` does not build, for two reasons that predate this work
 > `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so the three write sites migrated on
 > this branch are unverified beyond review.
