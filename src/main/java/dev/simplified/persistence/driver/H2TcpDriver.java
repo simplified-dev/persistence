@@ -1,7 +1,7 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
-import dev.simplified.persistence.store.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalOrigin;
 import org.jetbrains.annotations.NotNull;
 
 /**

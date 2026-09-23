@@ -4,7 +4,7 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
-import dev.simplified.persistence.store.WriteRequest;
+import dev.simplified.persistence.source.WriteRequest;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;

@@ -1,4 +1,4 @@
-package dev.simplified.persistence.store;
+package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import dev.simplified.annotations.Getter;
@@ -117,12 +117,12 @@ public final class RelationalOrigin {
      * @param logLevel the level the connection logs at
      * @return the open database, which the caller owns and must close
      */
-    public @NotNull Relational open(
+    public @NotNull RelationalSource open(
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Gson gson,
         @NotNull Logging.Level logLevel
     ) {
-        return new Relational(this, models, gson, logLevel);
+        return new RelationalSource(this, models, gson, logLevel);
     }
 
     /**

@@ -7,10 +7,10 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.store.Relational;
-import dev.simplified.persistence.store.RelationalOrigin;
-import dev.simplified.persistence.store.Source;
-import dev.simplified.persistence.store.WriteRequest;
+import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
+import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.scheduler.Scheduler;
 import dev.simplified.util.time.Stopwatch;
 import org.hibernate.Session;
@@ -30,7 +30,7 @@ import java.util.function.Function;
  * A JPA session holding one {@link JpaRepository} per registered type.
  *
  * <p>The {@link JpaConfig#getDatabase() database} decides how much of this class exists. With one,
- * {@link Relational} holds the whole Hibernate stack and is the origin for every type no factory
+ * {@link RelationalSource} holds the whole Hibernate stack and is the origin for every type no factory
  * names a source for. Without one there is no database to register anything against, so none of it
  * runs and none of it needs to be on the classpath; every type reads through the {@link Source} its
  * factory declares.</p>
@@ -84,7 +84,7 @@ public final class JpaSession {
     /**
      * The open database, empty when this session opened none.
      */
-    private final @NotNull Optional<Relational> relational;
+    private final @NotNull Optional<RelationalSource> relational;
 
     /**
      * Timing snapshot of the full constructor bootstrap.
@@ -133,7 +133,7 @@ public final class JpaSession {
      * @return the database this session opened
      * @throws JpaException if the session opened none
      */
-    private @NotNull Relational database() {
+    private @NotNull RelationalSource database() {
         return this.relational.orElseThrow(
             () -> new JpaException("Session opened no database, so there is no Hibernate access")
         );
@@ -413,7 +413,7 @@ public final class JpaSession {
         this.active = false;
         this.repositories.clear();
         this.scheduler.shutdown();
-        this.relational.ifPresent(Relational::close);
+        this.relational.ifPresent(RelationalSource::close);
     }
 
 }

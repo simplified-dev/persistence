@@ -1,0 +1,59 @@
+package dev.simplified.persistence.source;
+
+import dev.simplified.collection.ConcurrentList;
+import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.exception.JpaException;
+import org.jetbrains.annotations.NotNull;
+
+/**
+ * Where a type's rows come from, whether that is a relational table, a JSON document or anything else.
+ *
+ * <p>One source serves every type an origin publishes, so the type is an argument rather than a type
+ * parameter. A registry of one source per model is the shape that grows with the corpus; this one does
+ * not.
+ *
+ * <p>Reading is all a source promises. Writing is {@link Writable}, and a source that was handed no
+ * write instruction simply is not one - which is how an origin a caller may read but not update is
+ * expressed in the type system rather than in a document.
+ *
+ * @see Writable
+ * @see DocumentSource
+ * @see RelationalSource
+ */
+public interface Source {
+
+    /**
+     * Reads every row the origin holds for the given type.
+     *
+     * @param type the entity class to read
+     * @param <T> the entity type
+     * @return the rows, empty when the origin holds none
+     * @throws JpaException if the read fails
+     */
+    <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException;
+
+    /**
+     * The write half, for an origin a caller holds instructions to update.
+     *
+     * @see WritableDocumentSource
+     * @see RelationalSource
+     */
+    interface Writable extends Source {
+
+        /**
+         * Applies one write to the origin.
+         *
+         * <p>Granularity is the origin's concern. A document source reads its current layers, applies
+         * the request and rewrites the file; a relational source applies the rows one at a time.
+         * Neither leaks into the request.
+         *
+         * @param request the write to apply
+         * @param <T> the entity type
+         * @throws JpaException if the write fails, including when the request's precondition no longer
+         *         holds
+         */
+        <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException;
+
+    }
+
+}

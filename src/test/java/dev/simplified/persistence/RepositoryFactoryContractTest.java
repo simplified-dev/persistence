@@ -4,8 +4,9 @@ import com.google.gson.Gson;
 import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.persistence.store.DocumentOrigin;
-import dev.simplified.persistence.store.Source;
+import dev.simplified.persistence.source.DocumentOrigin;
+import dev.simplified.persistence.source.DocumentSource;
+import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.unmapped.ContractRow;
 import dev.simplified.persistence.unmapped.LayeredRow;
 import org.jetbrains.annotations.NotNull;
@@ -74,7 +75,7 @@ class RepositoryFactoryContractTest {
     private static final class SplitFactory implements RepositoryFactory {
 
         private final @NotNull Optional<Source> primary = Optional.empty();
-        private final @NotNull Optional<Source> secondary = Optional.of(Source.documents(EMPTY_ORIGIN, new Gson()));
+        private final @NotNull Optional<Source> secondary = Optional.of(new DocumentSource(EMPTY_ORIGIN, new Gson()));
 
         @Override
         public @NotNull ConcurrentList<Class<JpaModel>> getModels() {
@@ -106,7 +107,7 @@ class RepositoryFactoryContractTest {
     @Test
     @DisplayName("a declared factory answers its own fields through the contract type")
     void generatedAccessorsSatisfyTheContract() {
-        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
+        Source declared = new DocumentSource(EMPTY_ORIGIN, new Gson());
 
         // Held as the interface deliberately: a generated accessor whose name drifted would leave
         // the contract's own answer in place, and only this reference sees that.
@@ -119,7 +120,7 @@ class RepositoryFactoryContractTest {
     @Test
     @DisplayName("sourceFor falls through to the single source unless a factory says otherwise")
     void sourceForDefaultsToTheOneSource() {
-        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
+        Source declared = new DocumentSource(EMPTY_ORIGIN, new Gson());
         RepositoryFactory factory = new DeclaredFactory(models(ContractRow.class), Optional.of(declared));
 
         assertThat(factory.sourceFor(ContractRow.class).orElseThrow(), sameInstance(declared));
@@ -151,7 +152,7 @@ class RepositoryFactoryContractTest {
     @Test
     @DisplayName("the anchored factory carries the origin it was given to every type")
     void anchoredFactoryCarriesItsOrigin() {
-        Source declared = Source.documents(EMPTY_ORIGIN, new Gson());
+        Source declared = new DocumentSource(EMPTY_ORIGIN, new Gson());
         RepositoryFactory factory = RepositoryFactory.of(ContractRow.class, declared);
 
         assertThat(factory.getSource().orElseThrow(), sameInstance(declared));

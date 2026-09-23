@@ -1,4 +1,4 @@
-package dev.simplified.persistence.store;
+package dev.simplified.persistence.source;
 
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;

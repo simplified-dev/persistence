@@ -1,4 +1,4 @@
-package dev.simplified.persistence.store;
+package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import dev.simplified.annotations.Cleanup;
@@ -57,7 +57,7 @@ import java.util.function.Function;
  * @see RelationalOrigin#open
  */
 @Getter
-public final class Relational implements Source.Writable, AutoCloseable {
+public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
      * JCache TTL is set to this multiple of the refresh interval as a safety net. Under normal
@@ -99,7 +99,7 @@ public final class Relational implements Source.Writable, AutoCloseable {
      */
     private final @NotNull SessionFactory sessionFactory;
 
-    Relational(
+    RelationalSource(
         @NotNull RelationalOrigin origin,
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Gson gson,

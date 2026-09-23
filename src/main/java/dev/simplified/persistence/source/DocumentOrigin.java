@@ -1,4 +1,4 @@
-package dev.simplified.persistence.store;
+package dev.simplified.persistence.source;
 
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.exception.JpaException;
@@ -18,7 +18,8 @@ import java.util.Optional;
  * <p>Reading is all an origin promises. Writing is {@link Writable}, and an origin that was handed
  * no write instruction simply is not one.
  *
- * @see Source#documents(DocumentOrigin, com.google.gson.Gson)
+ * @see DocumentSource
+ * @see WritableDocumentSource
  */
 public interface DocumentOrigin {
 

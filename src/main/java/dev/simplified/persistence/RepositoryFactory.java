@@ -2,8 +2,8 @@ package dev.simplified.persistence;
 
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.persistence.store.RelationalOrigin;
-import dev.simplified.persistence.store.Source;
+import dev.simplified.persistence.source.RelationalSource;
+import dev.simplified.persistence.source.Source;
 import dev.simplified.reflection.Reflection;
 import org.jetbrains.annotations.NotNull;
 
@@ -17,14 +17,14 @@ import java.util.Optional;
  * draws from more than one origin overrides {@link #sourceFor(Class)}.
  *
  * <p>An empty source is not a factory holding nothing - it says the rows are the database's, and the
- * session substitutes the {@link RelationalOrigin} it opened. A factory that names an origin and a
+ * session substitutes the {@link RelationalSource} it opened. A factory that names an origin and a
  * session that holds a database are two answers to one question, and the factory's wins.
  *
  * <pre>{@code
  * public class CorpusFactory implements RepositoryFactory {
  *
  *     @Getter private final ConcurrentList<Class<JpaModel>> models = RepositoryFactory.resolveModels(Item.class);
- *     @Getter private final Optional<Source> source = Optional.of(Source.documents(origin, gson));
+ *     @Getter private final Optional<Source> source = Optional.of(new DocumentSource(origin, gson));
  *
  * }
  * }</pre>

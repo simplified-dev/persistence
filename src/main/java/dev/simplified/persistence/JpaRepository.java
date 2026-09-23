@@ -10,7 +10,7 @@ import dev.simplified.collection.query.Sortable;
 import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.persistence.store.Source;
+import dev.simplified.persistence.source.Source;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import dev.simplified.util.time.Stopwatch;

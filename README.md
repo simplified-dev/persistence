@@ -1,6 +1,6 @@
 # Persistence
 
-JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides read-only cached repositories, session management, per-entity TTL annotations, JSON- or SQL-backed entity stores, and support for multiple database drivers.
+JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides read-only cached repositories, session management, per-entity TTL annotations, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
 
 > [!IMPORTANT]
 > This library is under active development. APIs may change between releases until a stable `1.0.0` is published.
@@ -28,10 +28,9 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), cust
 - **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
 - **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`
-- **Entity stores** - One `EntityStore` contract for where a type's rows come from, expressible as a lambda; a `null` store leaves the type to the database
-- **Repository factory** - `RepositoryFactory` with topological entity sorting, per-type store registration, and classpath-based model discovery
+- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `WritableDocumentSource` - for a source that also takes writes
+- **Repository factory** - `RepositoryFactory` names the models a session holds and the `Source` each reads from, with classpath-scoped model discovery
 - **Foreign ID resolution** - `@ForeignIds` transient field population for cross-entity relationships loaded from non-relational sources
-- **Stale entity cleanup** - Automatic removal of database rows not present in the latest store load, in FK-safe reverse topological order
 - **External asset tracking** - `ExternalAssetState` and `ExternalAssetEntryState` record per-source and per-entry content hashes so a poller can tell what actually changed
 
 ## Getting Started
@@ -156,7 +155,7 @@ ConcurrentList<User> users = userRepo.findAll();
 | `dev.simplified.persistence.converter` | JPA attribute converters (`UUIDConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
-| `dev.simplified.persistence.store` | Where a type's rows come from and how they go back (`Source`, `DocumentOrigin`, `WriteRequest`) |
+| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `WritableDocumentSource`, `RelationalSource`, `DocumentOrigin`, `RelationalOrigin`, `WriteRequest`) |
 | `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonValueType`, `GsonType`) with type and converter registrars |
 
 ### Project Structure
@@ -192,9 +191,13 @@ persistence/
 │   │   │   └── SqlServerDriver.java
 │   │   ├── exception/
 │   │   │   └── JpaException.java
-│   │   ├── store/
+│   │   ├── source/
 │   │   │   ├── DocumentOrigin.java
+│   │   │   ├── DocumentSource.java
+│   │   │   ├── RelationalOrigin.java
+│   │   │   ├── RelationalSource.java
 │   │   │   ├── Source.java
+│   │   │   ├── WritableDocumentSource.java
 │   │   │   └── WriteRequest.java
 │   │   └── type/
 │   │       ├── ConverterRegistrar.java
