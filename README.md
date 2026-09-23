@@ -28,7 +28,7 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), cust
 - **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
 - **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`
-- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `WritableDocumentSource` - for a source that also takes writes
+- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
 - **Repository factory** - `RepositoryFactory` names the models a session holds and the `Source` each reads from, with classpath-scoped model discovery
 - **Foreign ID resolution** - `@ForeignIds` transient field population for cross-entity relationships loaded from non-relational sources
 - **External asset tracking** - `ExternalAssetState` and `ExternalAssetEntryState` record per-source and per-entry content hashes so a poller can tell what actually changed
@@ -155,7 +155,7 @@ ConcurrentList<User> users = userRepo.findAll();
 | `dev.simplified.persistence.converter` | JPA attribute converters (`UUIDConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
-| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `WritableDocumentSource`, `RelationalSource`, `DocumentOrigin`, `RelationalOrigin`, `WriteRequest`) |
+| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `RelationalSource`, `DocumentOrigin`, `RelationalOrigin`, `WriteRequest`) |
 | `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonValueType`, `GsonType`) with type and converter registrars |
 
 ### Project Structure
@@ -197,7 +197,6 @@ persistence/
 │   │   │   ├── RelationalOrigin.java
 │   │   │   ├── RelationalSource.java
 │   │   │   ├── Source.java
-│   │   │   ├── WritableDocumentSource.java
 │   │   │   └── WriteRequest.java
 │   │   └── type/
 │   │       ├── ConverterRegistrar.java

@@ -147,7 +147,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
         );
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("C", "c"))));
 
@@ -164,7 +164,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a written row replaces the one already under its key rather than joining it")
     void writeOverridesByKey() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]");
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "rewritten"))));
 
@@ -181,7 +181,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
             "[{\"id\":\"C\",\"name\":\"c\"}]"
         );
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.delete(LayeredRow.class, List.of(row("B", "b"))));
 
@@ -192,7 +192,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a write naming no rows reaches the origin at all")
     void emptyWriteIsSilence() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of()));
 
@@ -203,7 +203,7 @@ class DocumentLayerMergeTest {
     @DisplayName("the precondition the request names is the one the origin is handed")
     void preconditionReachesTheOrigin() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b"))).expecting("blob-sha"));
 
@@ -214,7 +214,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a request naming no precondition leaves the origin to resolve its own")
     void unconditionalWriteNamesNoPrecondition() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
-        Source.Writable source = new WritableDocumentSource(origin, GSON);
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b"))));
 

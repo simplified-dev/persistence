@@ -19,7 +19,7 @@ import java.util.Optional;
  * no write instruction simply is not one.
  *
  * @see DocumentSource
- * @see WritableDocumentSource
+ * @see DocumentSource.Writable
  */
 public interface DocumentOrigin {
 
