@@ -36,9 +36,17 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `master` with its own `collections` pin moved (step 2 below), not to a build of the branch itself,
 > which still pins `collections` `9696ca5`.
 >
+> github, hypixel, `SkyBlock-Simplified/api` and data pin `client` at `2ced9a4`, its `origin/master`,
+> where `RateLimit.fromHeaders` reads GitHub's epoch-second `X-RateLimit-Reset` as seconds until the
+> reset, so a bucket's window never ends and a client that has spent its quota stays refused. The fix
+> is on `client`'s unpushed `fix/ratelimit-reset`, whose tip is `ef08ede`, so a spent quota recovers
+> only where that branch is substituted. Every `client` pin in the cascade has to move to the
+> `client` sha built once that branch is on `master` with its own pins moved (step 2 below).
+>
 > Everything therefore verifies only through the root composite at `W:/Workspace/Java/Simplified`,
-> which substitutes the local projects - `utils` at its working tree, `5d14f56`, and `scheduler` at
-> `1c0dc05` among them, so the composite masks persistence's `utils` and `scheduler` pins as well:
+> which substitutes the local projects - `utils` at its working tree, `d675d06`, and `scheduler` and
+> `client` at their fix branches among them, so the composite masks persistence's `utils` and
+> `scheduler` pins, and the chain's `client` pins, as well:
 >
 > ```
 > ./gradlew :Simplified-Dev:scheduler:test :Simplified-Dev:persistence:test \
@@ -58,8 +66,10 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > 1. The chain. Finish `collections`' `feat/indexing` into `master` (`toolsmith branch finish`, a merge
 >    commit, so `58aaa00` stays reachable) and build it. Move persistence's `:21` to that sha and `:22`
->    to `utils` `5d14f56`, which is `utils`' `origin/master` and built; `JpaSession.dependentsOf` can
->    then hand its walk to `Graph.ancestors`. Push and build persistence. Move
+>    to `utils` `d675d06` rather than `5d14f56`: `d675d06` is `utils`' `origin/master` and built, with
+>    `docs/system-util-env`, its `SystemUtil` comments, finished into it, and `utils` pins no
+>    Simplified library, so nothing of its own moves. `JpaSession.dependentsOf` can then hand its walk
+>    to `Graph.ancestors`. Push and build persistence. Move
 >    `SkyBlock-Simplified/api`'s `:38`, `:39` and `:45`, merge its `feat/indexing` to `master` and build
 >    `master-SNAPSHOT`, which data reaches through `:71`. Move github's `:37`, then push and build its
 >    `feat/indexing`. skyblock's `4106c4c` already keeps its `SessionManager` private and connects the
@@ -75,10 +85,12 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    `3d8af56`; `nbt-factory`, which pins `utils` alone and falls outside that order, is the eleventh
 >    and moves before `asset-renderer`, which pins it. `scheduler` finishes `fix/shutdown-hook` into
 >    `master` before its `collections` pin moves, so the one sha it builds carries the hook's removal
->    as well. Besides `scheduler`, two of the thirteen are checked out on branches rather than
->    `master`. `discord4j-framework`'s `9696ca5` pins at `:43-49` are on `offline-test-harness`,
->    49 commits ahead of its upstream, while its `master` pins `collections` `2f2aa58` at `:38-44`,
->    and pushing the branch publishes its removal of `TreePage` and `ItemHandler`.
+>    as well, and `client` finishes `fix/ratelimit-reset` into `master` before its pins move, so the
+>    one sha it builds carries the rate-limit reset fix. Besides `scheduler` and `client`, two of the
+>    thirteen are checked out on branches rather than `master`. `discord4j-framework`'s `9696ca5`
+>    pins at `:43-49` are on `offline-test-harness`, 49 commits ahead of its upstream, while its
+>    `master` pins `collections` `2f2aa58` at `:38-44`, and pushing the branch publishes its removal
+>    of `TreePage` and `ItemHandler`.
 >    `asset-renderer` is on `refactor/package-redesign`, 12 commits past `origin/master`,
 >    which carries the same pins at the same lines. Which branch each of the two re-pins and builds
 >    on is left to the user.
@@ -87,8 +99,11 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    github follows `client` and `gson-extras`. Then `SkyBlock-Simplified/api`, skyblock, hypixel and
 >    data, in that order, each move their persistence pin and every pin on a module step 2 or this
 >    pass rebuilt; `SkyBlock-Simplified/api` lands on `master` again, so data's `master-SNAPSHOT`
->    follows it. `SkyBlock-Simplified/server`, which pins modules from both sides, moves last. `bot`
->    does not build and is not part of the cascade.
+>    follows it. `SkyBlock-Simplified/server`, which pins modules from both sides, moves last. Every
+>    module in the cascade that pins `client` ends on the one sha step 2 builds for it, which carries
+>    the rate-limit reset fix: the modules step 2 rebuilds after `client` take it there, and github,
+>    `SkyBlock-Simplified/api`, hypixel, data and `SkyBlock-Simplified/server` take it in this pass.
+>    `bot` does not build and is not part of the cascade.
 >
 > - Affected: `build.gradle.kts:21-25`; `Simplified-Api/github/build.gradle.kts:35-37`;
 >   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38-42`, `:46`;
@@ -108,7 +123,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `master`; `Minecraft-Library/nbt-factory/build.gradle.kts:38`;
 >   `SkyBlock-Simplified/server/build.gradle.kts:42-44`, `:47-50`, `:53`;
 >   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`;
->   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `1c0dc05`
+>   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `1c0dc05`;
+>   `Simplified-Dev/client` branch `fix/ratelimit-reset` at `ef08ede`
 > - Type: **GAP**
 > - Status: **OPEN** - needs the user's pushes and JitPack builds, `collections` first
 
