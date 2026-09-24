@@ -60,7 +60,7 @@ class JpaCacheTest {
     @Test
     @DisplayName("a repository holds a generation once the session has connected")
     void connectPublishesAGeneration() {
-        Repository<TestParentModel> repository = this.session.getRepository(TestParentModel.class);
+        Repository<TestParentModel> repository = this.session.getRepository(TestParentModel.class).orElseThrow();
 
         assertEquals(HydrationState.CURRENT, repository.getState());
         assertTrue(repository.getHydratedAt().isAfter(Instant.EPOCH), "the generation should carry its publication time");
@@ -71,7 +71,7 @@ class JpaCacheTest {
     void writeRehydrates() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        ConcurrentList<TestParentModel> parents = this.session.getRepository(TestParentModel.class).findAll();
+        ConcurrentList<TestParentModel> parents = this.session.getRepository(TestParentModel.class).orElseThrow().findAll();
         assertFalse(parents.isEmpty(), "the written row should be held after the write rehydrates");
         assertEquals("parent1", parents.getFirst().getName());
     }
@@ -85,9 +85,9 @@ class JpaCacheTest {
         stats.clear();
 
         // Every finder is written over the held generation, so none of them reaches a database.
-        this.session.getRepository(TestParentModel.class).findAll();
-        this.session.getRepository(TestParentModel.class).findFirst(TestParentModel::getName, "parent1");
-        this.session.getRepository(TestChildModel.class).findAll();
+        this.session.getRepository(TestParentModel.class).orElseThrow().findAll();
+        this.session.getRepository(TestParentModel.class).orElseThrow().findFirst(TestParentModel::getName, "parent1");
+        this.session.getRepository(TestChildModel.class).orElseThrow().findAll();
 
         assertEquals(0, stats.getPrepareStatementCount(), "a read over held rows should prepare no statement");
     }
@@ -97,7 +97,7 @@ class JpaCacheTest {
     void linksAreResolvedBeforePublication() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        ConcurrentList<TestChildModel> children = this.session.getRepository(TestChildModel.class).findAll();
+        ConcurrentList<TestChildModel> children = this.session.getRepository(TestChildModel.class).orElseThrow().findAll();
         assertFalse(children.isEmpty(), "expected the written child");
 
         TestChildModel child = children.getFirst();
@@ -117,7 +117,7 @@ class JpaCacheTest {
 
         // The child is not written, but it associates with the parent that was, so its held row
         // follows the parent rather than keeping the name it was read with.
-        TestChildModel child = this.session.getRepository(TestChildModel.class).findAll().getFirst();
+        TestChildModel child = this.session.getRepository(TestChildModel.class).orElseThrow().findAll().getFirst();
         assertEquals("renamed", child.getParent().getName());
     }
 

@@ -6,12 +6,16 @@ import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.WriteRequest;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.Optional;
+
 /**
  * Thread-safe registry of active {@link JpaSession} instances, providing the primary
  * entry points for session lifecycle management and cross-session repository lookup.
  *
- * <p>Sessions are created via {@link #connect(JpaConfig)}, which constructs and initializes
- * a {@link JpaSession}, caches its repositories, and adds it to the internal list.</p>
+ * <p>Sessions are created via {@link #connect(JpaConfig)}, which constructs a {@link JpaSession},
+ * hydrates every type it registers, and only then adds it to the internal list - so no lookup ever
+ * reaches a session that has not finished its first hydration, or one whose first hydration
+ * failed.</p>
  *
  * <p>Repository access via {@link #getRepository(Class)} searches all active sessions
  * in registration order, returning the first match. This allows multiple sessions
@@ -29,11 +33,11 @@ public final class SessionManager {
     }
 
     /**
-     * Creates a new {@link JpaSession} from the given configuration, registers it,
-     * and populates its repository cache.
+     * Creates a new {@link JpaSession} from the given configuration, hydrates it, and registers it.
      *
      * <p>The returned session has hydrated every registered type and is immediately usable for
-     * queries.</p>
+     * queries. When the first hydration fails the session is shut down and never registered; a
+     * database the caller opened for it stays open until the caller closes it.</p>
      *
      * @param config the registered models and the source they are read from
      * @return the newly created and fully initialized session
@@ -41,8 +45,15 @@ public final class SessionManager {
      */
     public @NotNull JpaSession connect(@NotNull JpaConfig config) {
         JpaSession session = new JpaSession(config);
+
+        try {
+            session.cacheRepositories();
+        } catch (RuntimeException exception) {
+            session.shutdown();
+            throw exception;
+        }
+
         this.sessions.add(session);
-        session.cacheRepositories();
         return session;
     }
 
@@ -85,8 +96,10 @@ public final class SessionManager {
             throw new JpaException("There are no active sessions");
 
         for (JpaSession session : this.sessions) {
-            if (session.hasRepository(tClass))
-                return session.getRepository(tClass);
+            Optional<Repository<M>> repository = session.getRepository(tClass);
+
+            if (repository.isPresent())
+                return repository.get();
         }
 
         throw new JpaException("Repository cannot be retrieved");
@@ -109,7 +122,7 @@ public final class SessionManager {
             throw new JpaException("There are no active sessions");
 
         for (JpaSession session : this.sessions) {
-            if (session.hasRepository(request.type())) {
+            if (session.getRepository(request.type()).isPresent()) {
                 session.write(request);
                 return;
             }

@@ -60,7 +60,7 @@ class JpaSessionRebuildTest {
         assertThat(repository.getRows(), empty());
         assertThat(repository.getState(), equalTo(HydrationState.HYDRATING));
 
-        LinkedParent parent = this.session.getRepository(LinkedParent.class).getRows().getFirst();
+        LinkedParent parent = this.session.getRepository(LinkedParent.class).orElseThrow().getRows().getFirst();
         repository.link(read, target -> JpaModel.keyed(LinkedParent.class, List.of(parent)));
 
         assertThat(read.getFirst().getParent(), sameInstance(parent));
@@ -75,8 +75,8 @@ class JpaSessionRebuildTest {
     @Test
     @DisplayName("a connected child already points at the parent the session holds")
     void connectLinksAgainstTheHeldParent() {
-        LinkedParent held = this.session.getRepository(LinkedParent.class).getRows().getFirst();
-        LinkedChild child = this.session.getRepository(LinkedChild.class).getRows().getFirst();
+        LinkedParent held = this.session.getRepository(LinkedParent.class).orElseThrow().getRows().getFirst();
+        LinkedChild child = this.session.getRepository(LinkedChild.class).orElseThrow().getRows().getFirst();
 
         assertThat(child.getParent(), sameInstance(held));
     }
@@ -84,7 +84,7 @@ class JpaSessionRebuildTest {
     @Test
     @DisplayName("a rebuild that fails publishes nothing and reports the failure")
     void aFailedRebuildKeepsThePreviousGeneration() {
-        Repository<LinkedParent> parents = this.session.getRepository(LinkedParent.class);
+        Repository<LinkedParent> parents = this.session.getRepository(LinkedParent.class).orElseThrow();
         LinkedParent before = parents.getRows().getFirst();
         this.corpus.failing = LinkedParent.class;
 
@@ -102,8 +102,8 @@ class JpaSessionRebuildTest {
 
         this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno"))));
 
-        LinkedParent held = this.session.getRepository(LinkedParent.class).getRows().getFirst();
-        LinkedChild child = this.session.getRepository(LinkedChild.class).getRows().getFirst();
+        LinkedParent held = this.session.getRepository(LinkedParent.class).orElseThrow().getRows().getFirst();
+        LinkedChild child = this.session.getRepository(LinkedChild.class).orElseThrow().getRows().getFirst();
 
         assertThat(held.getName(), equalTo("uno"));
         assertThat(child.getParent(), sameInstance(held));
@@ -121,14 +121,14 @@ class JpaSessionRebuildTest {
         this.session.write(WriteRequest.upsert(LinkedChild.class, List.of(child)));
 
         assertThat(this.corpus.parentReads.get(), equalTo(parentReads));
-        assertThat(this.session.getRepository(LinkedChild.class).getRows(), hasSize(2));
+        assertThat(this.session.getRepository(LinkedChild.class).orElseThrow().getRows(), hasSize(2));
     }
 
     @Test
     @DisplayName("a dependent that fails to rebuild keeps the written type's previous generation too")
     void aFailingDependentPublishesNothing() {
-        Repository<LinkedParent> parents = this.session.getRepository(LinkedParent.class);
-        Repository<LinkedChild> children = this.session.getRepository(LinkedChild.class);
+        Repository<LinkedParent> parents = this.session.getRepository(LinkedParent.class).orElseThrow();
+        Repository<LinkedChild> children = this.session.getRepository(LinkedChild.class).orElseThrow();
         LinkedParent before = parents.getRows().getFirst();
         this.corpus.failing = LinkedChild.class;
 

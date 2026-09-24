@@ -97,9 +97,9 @@ class JpaSessionHydrationTest {
         assertThat(childReads.get(), equalTo(1));
 
         // A read afterwards answers from the held generation, so the counters do not move.
-        session.getRepository(TestParentModel.class).findAll();
-        session.getRepository(TestChildModel.class).findAll();
-        session.getRepository(TestParentModel.class).findFirst(TestParentModel::getName, "parent1");
+        session.getRepository(TestParentModel.class).orElseThrow().findAll();
+        session.getRepository(TestChildModel.class).orElseThrow().findAll();
+        session.getRepository(TestParentModel.class).orElseThrow().findFirst(TestParentModel::getName, "parent1");
 
         assertThat(parentReads.get(), equalTo(1));
         assertThat(childReads.get(), equalTo(1));
@@ -112,8 +112,8 @@ class JpaSessionHydrationTest {
         // generation.
         JpaSession session = this.connect("hydration_states");
 
-        assertThat(session.getRepository(TestParentModel.class).getState(), equalTo(HydrationState.CURRENT));
-        assertThat(session.getRepository(TestChildModel.class).getState(), equalTo(HydrationState.CURRENT));
+        assertThat(session.getRepository(TestParentModel.class).orElseThrow().getState(), equalTo(HydrationState.CURRENT));
+        assertThat(session.getRepository(TestChildModel.class).orElseThrow().getState(), equalTo(HydrationState.CURRENT));
     }
 
     @Test
@@ -141,6 +141,11 @@ class JpaSessionHydrationTest {
         // the registration order is the discovery order rather than anything this test chooses.
         String firstRead = JpaModel.resolveModels(TestParentModel.class).getFirst().getName();
         assertThat(thrown.getMessage().contains(firstRead), equalTo(true));
+
+        // A session whose first hydration failed is never registered, so no lookup reaches its
+        // half-built repositories and the same configuration can simply connect again.
+        assertThat(this.sessionManager.isActive(), equalTo(false));
+        assertThrows(JpaException.class, () -> this.sessionManager.getRepository(TestParentModel.class));
     }
 
 }

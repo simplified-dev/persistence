@@ -240,33 +240,19 @@ public final class JpaSession {
     }
 
     /**
-     * Retrieves the {@link Repository} for the given model class, searching by exact key
-     * match first, then by assignability.
+     * Retrieves the {@link Repository} for the given model class: the one registered for the class
+     * itself, otherwise the first registered for a subtype of it.
      *
      * @param tClass the entity class to look up
      * @param <M> the entity type
-     * @return the matching repository
-     * @throws JpaException if the session is not active or no matching repository exists
+     * @return the matching repository, empty when this session registers none or has been shut down
      */
     @SuppressWarnings("unchecked")
-    public <M extends JpaModel> @NotNull Repository<M> getRepository(@NotNull Class<M> tClass) {
+    public <M extends JpaModel> @NotNull Optional<Repository<M>> getRepository(@NotNull Class<M> tClass) {
         if (!this.isActive())
-            throw new JpaException("Session connection is not active");
+            return Optional.empty();
 
-        return registered(this.config.models(), tClass)
-            .map(type -> (Repository<M>) this.repositories.get(type))
-            .orElseThrow(() -> new JpaException("Repository for " + tClass.getName() + " not found"));
-    }
-
-    /**
-     * Checks whether a {@link Repository} for the given type (or a subtype) is registered
-     * in this session.
-     *
-     * @param tClass the model class to check
-     * @return {@code true} if a matching repository exists, {@code false} if not active or not found
-     */
-    public boolean hasRepository(@NotNull Class<?> tClass) {
-        return this.isActive() && registered(this.config.models(), tClass).isPresent();
+        return registered(this.config.models(), tClass).map(type -> (Repository<M>) this.repositories.get(type));
     }
 
     /**
@@ -275,8 +261,8 @@ public final class JpaSession {
      * <p>Marks the session as inactive, clears all repositories and shuts down the scheduler, if one
      * was built. The source is not closed: whoever opened it closes it.</p>
      *
-     * <p>After shutdown, {@link #getRepository(Class)} and {@link #hasRepository(Class)}
-     * will reject or deny all lookups. The session object should be discarded.</p>
+     * <p>After shutdown, {@link #getRepository(Class)} answers empty for every type. The session
+     * object should be discarded.</p>
      */
     void shutdown() {
         this.active = false;
