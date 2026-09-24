@@ -31,7 +31,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > persistence also pins `scheduler` at `21570df`, its `origin/master`, where `Scheduler.shutdown()`
 > leaves its JVM shutdown hook registered and so keeps a shut-down session with a `@Hydration` cadence
 > reachable until exit. The hook is removed at `4c401ab`, on `scheduler`'s unpushed
-> `fix/shutdown-hook`, so a shut-down session is released only where that commit is substituted.
+> `fix/shutdown-hook`, so a shut-down session is released only where that commit is substituted, and
+> `:25` has to move to the sha that branch builds.
 >
 > Everything therefore verifies only through the root composite at `W:/Workspace/Java/Simplified`,
 > which substitutes the local projects - `utils` at its working tree, `5d14f56`, and `scheduler` at
@@ -43,21 +44,66 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   :SkyBlock-Simplified:api:test :SkyBlock-Simplified:data:test
 > ```
 >
-> Closing it is a sequence on a third-party service, not a line in a build file: build `collections`,
-> merge and build `scheduler`, and move persistence's pins; push and build persistence; move
-> `SkyBlock-Simplified/api`'s pins, merge it to `master` and build it; push and build github; move
-> skyblock's pins, push and build it; then move the hypixel and data pins - confirming at each step
-> that the module resolves the published surface rather than the composite's substitution masking it.
+> Closing it is the full one-sha cascade, a sequence on a third-party service rather than a line in a
+> build file: every module `toolsmith jitpack order collections` lists ends up pinning one sha per
+> artifact. Resolution needs only the first of its three passes - an inherited pin is published as
+> `requires`, which a consumer's own `strictly` overrides - and the other two keep that convention and
+> leave no published jar compiled against `9696ca5` running against the new `collections`. Every push
+> and JitPack build in it is the user's. Before a sha is pinned,
+> `toolsmith jitpack status <module> --ref <sha>` confirms it built, and each module is verified
+> outside the composite with `toolsmith gradle verify <module> test`, so it resolves the published
+> surface rather than the substitution.
 >
-> - Affected: `build.gradle.kts:21`, `:22`, `:25`; `Simplified-Api/github/build.gradle.kts:37`;
->   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38`, `:39`, `:42`;
->   `Simplified-Api/hypixel/build.gradle.kts:35`, `:38`, `:39`, `:42`;
->   `SkyBlock-Simplified/api/build.gradle.kts:38`, `:39`, `:45`;
->   `SkyBlock-Simplified/data/build.gradle.kts:67`, `:71`, `:76`, `:78`, `:79`;
+> 1. The chain. Finish `collections`' `feat/indexing` into `master` (`toolsmith branch finish`, a merge
+>    commit, so `58aaa00` stays reachable) and build it. Move persistence's `:21` to that sha and `:22`
+>    to `utils` `5d14f56`, which is `utils`' `origin/master` and built; `JpaSession.dependentsOf` can
+>    then hand its walk to `Graph.ancestors`. Push and build persistence. Move
+>    `SkyBlock-Simplified/api`'s `:38`, `:39` and `:45`, merge its `feat/indexing` to `master` and build
+>    `master-SNAPSHOT`, which data reaches through `:71`. Move github's `:37`, then push and build its
+>    `feat/indexing`. Land the fix for "A consumer can still force a full SkyBlock rehydration" below,
+>    so the sha skyblock publishes carries no public `getSessionManager()`, then move skyblock's `:35`,
+>    `:38`, `:39` and `:42`, push and build it. Last, move hypixel's `:35`, `:38`, `:39` and `:42`, and
+>    data's `:67`, `:76`, `:78` and `:79`.
+> 2. The convention pins. Walk `toolsmith jitpack order collections` over the modules outside the
+>    chain: the thirteen that pin `collections` `9696ca5` by convention only - `expression`, `image`,
+>    `manager`, `reflection`, `scheduler`, `gson-extras`, `minecraft-text`, `yaml`, `client`,
+>    `dataflow`, `mojang`, `asset-renderer` and `discord4j-framework` - and `spring-framework`, which
+>    pins `client` and `gson-extras`. Each moves its `collections` pin, its `utils` pin where it has
+>    one, and every pin on a module rebuilt before it, and is pushed and built. Ten of them pin `utils`
+>    `3d8af56`; `nbt-factory`, which pins `utils` alone and falls outside that order, is the eleventh
+>    and moves before `asset-renderer`, which pins it. `scheduler` finishes `fix/shutdown-hook` into
+>    `master` before its `collections` pin moves, so the one sha it builds carries the hook's removal
+>    as well.
+> 3. The second pass. Each library step 2 rebuilt is a new sha the chain has to follow. persistence
+>    moves `:23` `reflection`, `:24` `gson-extras` and `:25` `scheduler`, and is pushed and built again.
+>    github follows `client` and `gson-extras`. Then `SkyBlock-Simplified/api`, skyblock, hypixel and
+>    data, in that order, each move their persistence pin and every pin on a module step 2 or this
+>    pass rebuilt; `SkyBlock-Simplified/api` lands on `master` again, so data's `master-SNAPSHOT`
+>    follows it. bot and `SkyBlock-Simplified/server`, which pin modules from both sides, move last,
+>    and bot's cannot be verified until it builds (below).
+>
+> - Affected: `build.gradle.kts:21-25`; `Simplified-Api/github/build.gradle.kts:35-37`;
+>   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38-42`, `:46`;
+>   `Simplified-Api/hypixel/build.gradle.kts:35`, `:38-44`, `:47-48`;
+>   `SkyBlock-Simplified/api/build.gradle.kts:35`, `:38-42`, `:45`;
+>   `SkyBlock-Simplified/data/build.gradle.kts:45`, `:61-62`, `:67`, `:71`, `:76`, `:78-79`;
+>   `Simplified-Dev/expression/build.gradle.kts:21-22`; `Simplified-Dev/image/build.gradle.kts:21-22`;
+>   `Simplified-Dev/manager/build.gradle.kts:21`; `Simplified-Dev/reflection/build.gradle.kts:21-22`;
+>   `Simplified-Dev/scheduler/build.gradle.kts:22`; `Simplified-Dev/gson-extras/build.gradle.kts:21-23`;
+>   `Minecraft-Library/minecraft-text/build.gradle.kts:36-38`;
+>   `Simplified-Dev/yaml/build.gradle.kts:21-23`;
+>   `Simplified-Dev/client/build.gradle.kts:43-46`; `Simplified-Dev/dataflow/build.gradle.kts:36-39`;
+>   `Simplified-Api/mojang/build.gradle.kts:35-39`, `:43`;
+>   `Simplified-Dev/spring-framework/build.gradle.kts:40-41`;
+>   `Minecraft-Library/asset-renderer/build.gradle.kts:174-179`, `:183`, `:189`, `:195`;
+>   `Simplified-Dev/discord4j-framework/build.gradle.kts:43-49`;
+>   `Minecraft-Library/nbt-factory/build.gradle.kts:38`;
+>   `SkyBlock-Simplified/bot/build.gradle.kts:48-49`, `:51`;
+>   `SkyBlock-Simplified/server/build.gradle.kts:42-44`, `:47-50`, `:53`;
 >   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`;
 >   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `4c401ab`
 > - Type: **GAP**
-> - Status: **OPEN** - needs pushes and JitPack builds in dependency order, `collections` first
+> - Status: **OPEN** - needs the user's pushes and JitPack builds, `collections` first
 
 > #### A queued corpus write skips the session's link check
 > `JpaSession.write` links an upsert's rows against the rows the session holds before anything reaches
