@@ -1,10 +1,13 @@
 package dev.simplified.persistence;
 
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.WriteRequest;
+import dev.simplified.util.Logging;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,23 +30,31 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JpaCacheTest {
 
     private SessionManager sessionManager;
+    private RelationalSource database;
     private JpaSession session;
 
     @BeforeEach
     void setup() {
+        ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(TestParentModel.class);
+
         this.sessionManager = new SessionManager();
-
-        JpaConfig config = JpaConfig.common(H2MemoryDriver.named("jpa_cache_test").isUsingStatistics().withDefaultCacheExpiryMs(2000).build())
-            .withRepositoryFactory(RepositoryFactory.of(TestParentModel.class))
-            .build();
-
-        this.session = this.sessionManager.connect(config);
+        this.database = H2MemoryDriver.named("jpa_cache_test")
+            .isUsingStatistics()
+            .withDefaultCacheExpiryMs(2000)
+            .build()
+            .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+        this.session = this.sessionManager.connect(new JpaConfig(models, this.database));
     }
 
     @AfterEach
     void teardown() {
+        // The session first, so no write or tick reaches a closed database; then the opener closes
+        // what it opened.
         if (this.sessionManager != null)
             this.sessionManager.shutdown();
+
+        if (this.database != null)
+            this.database.close();
     }
 
     @Test
@@ -71,7 +82,7 @@ class JpaCacheTest {
     void readIssuesNoQuery() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
         // Every finder is written over the held generation, so none of them reaches a database.
@@ -96,16 +107,17 @@ class JpaCacheTest {
     }
 
     @Test
-    @DisplayName("direct session access still consults the second-level cache")
+    @DisplayName("direct database access still consults the second-level cache")
     void cacheHitWithinExpiry() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
         // The hydration the write triggered populated the entity region on its way past, so a per-id
-        // find within the TTL answers from it. This is the escape hatch, not the repository path.
-        this.session.with(hibernate -> {
+        // find within the TTL answers from it. This is the opener's Hibernate access, not the
+        // repository path.
+        this.database.with(hibernate -> {
             assertNotNull(hibernate.find(TestParentModel.class, 1));
             assertNotNull(hibernate.find(TestChildModel.class, 10));
         });
@@ -122,10 +134,10 @@ class JpaCacheTest {
         // 4s JCache TTL, from the 2x multiplier on a 2s default expiry.
         Thread.sleep(5000);
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
-        this.session.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
+        this.database.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
 
         long misses = stats.getSecondLevelCacheMissCount();
         assertTrue(misses > 0, "expected L2 entity cache misses after the TTL, got " + misses);

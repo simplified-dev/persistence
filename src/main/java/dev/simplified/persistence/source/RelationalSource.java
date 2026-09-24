@@ -44,12 +44,15 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * An open database, and the rows every type it holds are read and written through.
+ * An open database, and the rows every type it maps are read and written through.
  *
  * <p>Everything Hibernate needs to exist is here and nowhere else - the service registry, the
- * metadata, the session factory and the JCache regions - so a session that opened no database holds
- * none of it rather than holding four nulls. It is a {@link Source.Writable} like any other origin,
- * which is what lets a repository read a table the same way it reads a document.
+ * metadata, the session factory and the JCache regions - so a session reading a document source holds
+ * none of it. It is a {@link Source.Writable} like any other origin, which is what lets a repository
+ * read a table the same way it reads a document.
+ *
+ * <p>Whoever opens one holds it: for the Hibernate access below, for the session it is handed to, and
+ * to close it once every session reading it is shut down.
  *
  * <p>A relational origin always accepts writes. Refusing one is the database's job, through the
  * permissions the connection was opened under, rather than this library's.
@@ -75,7 +78,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     private final @NotNull RelationalOrigin origin;
 
     /**
-     * The types registered against it.
+     * The types it maps.
      */
     private final @NotNull ConcurrentList<Class<JpaModel>> models;
 

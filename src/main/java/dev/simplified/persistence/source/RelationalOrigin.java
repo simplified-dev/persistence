@@ -110,18 +110,24 @@ public final class RelationalOrigin {
     }
 
     /**
-     * Opens the database and holds it, so the rows of every type it authors can be read and written.
+     * Opens the database and holds it, so the rows of every type it maps can be read and written.
      *
-     * @param models the types the session registers
+     * <p>The mapped types are the database's, not a session's. A session registers the types it
+     * holds a generation of, and a mapped type left out of that list is reached through the returned
+     * source's Hibernate access instead.
+     *
+     * @param models the types the database maps
      * @param gson the parser custom Hibernate types bind through
      * @param logLevel the level the connection logs at
-     * @return the open database, which the caller owns and must close
+     * @return the open database, which the caller owns and must close once every session reading it
+     *         is shut down
      */
     public @NotNull RelationalSource open(
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Gson gson,
         @NotNull Logging.Level logLevel
     ) {
+        this.applyLogLevel(logLevel, models);
         return new RelationalSource(this, models, gson, logLevel);
     }
 
@@ -131,7 +137,8 @@ public final class RelationalOrigin {
      * @param level the level to apply
      * @param models the types whose cache regions log under their own names
      */
-    public void applyLogLevel(@NotNull Logging.Level level, @NotNull ConcurrentList<Class<JpaModel>> models) {
+    private void applyLogLevel(@NotNull Logging.Level level, @NotNull ConcurrentList<Class<JpaModel>> models) {
+        Logging.setLevel("org.jboss.logging", level);
         Logging.setLevel("org.hibernate", level);
         Logging.setLevel("org.ehcache", level);
         Logging.setLevel(this.getDriver().getClassPath(), level);
@@ -285,8 +292,8 @@ public final class RelationalOrigin {
         /**
          * Builds the origin.
          *
-         * <p>No connection is opened: a session opens it, because opening one needs the types it
-         * registers.
+         * <p>No connection is opened: {@link RelationalOrigin#open} opens it, because opening one
+         * needs the types it maps.
          *
          * @return the database this describes
          */

@@ -1,10 +1,13 @@
 package dev.simplified.persistence;
 
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.WriteRequest;
+import dev.simplified.util.Logging;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -46,6 +49,7 @@ class JpaCacheHazelcastTest {
     private static final String PROVIDER_CLASS = "com.hazelcast.cache.impl.HazelcastServerCachingProvider";
 
     private SessionManager sessionManager;
+    private RelationalSource database;
     private JpaSession session;
 
     @BeforeAll
@@ -65,27 +69,25 @@ class JpaCacheHazelcastTest {
 
     @BeforeEach
     void setup() {
+        ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(TestParentModel.class);
+
         sessionManager = new SessionManager();
-
-        JpaConfig config = JpaConfig.common(
-            H2MemoryDriver.named("jpa_cache_hazelcast_test")
-                .isUsingStatistics()
-                .withDefaultCacheExpiryMs(2000)
-                .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
-                .build()
-        )
-            .withRepositoryFactory(
-                RepositoryFactory.of(TestParentModel.class)
-            )
-            .build();
-
-        session = sessionManager.connect(config);
+        database = H2MemoryDriver.named("jpa_cache_hazelcast_test")
+            .isUsingStatistics()
+            .withDefaultCacheExpiryMs(2000)
+            .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
+            .build()
+            .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+        session = sessionManager.connect(new JpaConfig(models, database));
     }
 
     @AfterEach
     void teardown() {
         if (sessionManager != null)
             sessionManager.shutdown();
+
+        if (database != null)
+            database.close();
     }
 
     @Test
@@ -113,7 +115,7 @@ class JpaCacheHazelcastTest {
     void readIssuesNoQuery() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
         // Every finder is written over the held generation, so none of them reaches a database.
@@ -138,16 +140,17 @@ class JpaCacheHazelcastTest {
     }
 
     @Test
-    @DisplayName("direct session access still consults the second-level cache")
+    @DisplayName("direct database access still consults the second-level cache")
     void cacheHitWithinExpiry() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
         // The hydration the write triggered populated the entity region on its way past, so a per-id
-        // find within the TTL answers from it. This is the escape hatch, not the repository path.
-        this.session.with(hibernate -> {
+        // find within the TTL answers from it. This is the opener's Hibernate access, not the
+        // repository path.
+        this.database.with(hibernate -> {
             assertNotNull(hibernate.find(TestParentModel.class, 1));
             assertNotNull(hibernate.find(TestChildModel.class, 10));
         });
@@ -164,10 +167,10 @@ class JpaCacheHazelcastTest {
         // 4s JCache TTL, from the 2x multiplier on a 2s default expiry.
         Thread.sleep(5000);
 
-        Statistics stats = this.session.getSessionFactory().getStatistics();
+        Statistics stats = this.database.getSessionFactory().getStatistics();
         stats.clear();
 
-        this.session.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
+        this.database.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
 
         long misses = stats.getSecondLevelCacheMissCount();
         assertTrue(misses > 0, "expected L2 entity cache misses after the TTL, got " + misses);

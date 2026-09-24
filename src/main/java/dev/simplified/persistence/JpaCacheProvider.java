@@ -3,6 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
 import dev.simplified.annotations.RequiredArgsConstructor;
+import dev.simplified.persistence.source.RelationalOrigin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -10,7 +11,7 @@ import javax.cache.Caching;
 
 /**
  * Selects the JCache (JSR-107) {@code CachingProvider} implementation that backs the
- * Hibernate second-level cache for a {@link JpaConfig}.
+ * Hibernate second-level cache for an open database.
  *
  * <p>Each constant carries the fully-qualified provider class name passed to
  * {@link Caching#getCachingProvider(String)} and an optional XML config
@@ -21,7 +22,7 @@ import javax.cache.Caching;
  * persistence library declares all Hazelcast classes as {@code compileOnly} so
  * consumers that stay on EhCache do not transitively pull Hazelcast.</p>
  *
- * @see JpaConfig.Builder#withCacheProvider(JpaCacheProvider)
+ * @see RelationalOrigin.Builder#withCacheProvider(JpaCacheProvider)
  */
 @Getter
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)

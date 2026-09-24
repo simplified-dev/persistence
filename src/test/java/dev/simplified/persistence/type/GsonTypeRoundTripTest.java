@@ -3,9 +3,9 @@ package dev.simplified.persistence.type;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.JpaConfig;
-import dev.simplified.persistence.JpaSession;
-import dev.simplified.persistence.RepositoryFactory;
+import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.SessionManager;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
@@ -14,6 +14,8 @@ import dev.simplified.persistence.model.GsonFixtureModel.Rarity;
 import dev.simplified.persistence.model.GsonFixtureModel.Substitute;
 import dev.simplified.persistence.model.GsonFixtureModel;
 import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.source.RelationalSource;
+import dev.simplified.util.Logging;
 import org.hibernate.Session;
 import org.hibernate.mapping.BasicValue;
 import org.hibernate.mapping.PersistentClass;
@@ -52,32 +54,26 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("fast")
 class GsonTypeRoundTripTest {
 
-    private static SessionManager sessionManager;
-    private static JpaSession session;
+    /**
+     * The database the fixtures are written to and read back from. Nothing registers the fixture
+     * types with a session - they are mapped and reached through Hibernate, which is all this needs.
+     */
+    private static RelationalSource database;
 
     @BeforeAll
-    static void connect() {
-        sessionManager = new SessionManager();
-
-        JpaConfig config = JpaConfig.common(
-            H2MemoryDriver.named("gson_type_round_trip")
-                .isUsing2ndLevelCache(false)
-                .isUsingQueryCache(false)
-                .withDefaultCacheExpiryMs(0)
-                .build()
-        )
-            .withRepositoryFactory(
-                RepositoryFactory.of(GsonFixtureModel.class)
-            )
-            .build();
-
-        session = sessionManager.connect(config);
+    static void open() {
+        database = H2MemoryDriver.named("gson_type_round_trip")
+            .isUsing2ndLevelCache(false)
+            .isUsingQueryCache(false)
+            .withDefaultCacheExpiryMs(0)
+            .build()
+            .open(JpaModel.resolveModels(GsonFixtureModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
     }
 
     @AfterAll
-    static void disconnect() {
-        if (sessionManager != null)
-            sessionManager.shutdown();
+    static void close() {
+        if (database != null)
+            database.close();
     }
 
     /**
@@ -293,7 +289,7 @@ class GsonTypeRoundTripTest {
             row.setId(45);
             row.setOptString(null);
 
-            assertDoesNotThrow(() -> session.transaction(s -> { s.persist(row); }));
+            assertDoesNotThrow(() -> database.transaction(s -> { s.persist(row); }));
             assertNull(rawColumn("opt_string", 45));
             assertEquals(Optional.empty(), load(45).getOptString());
         }
@@ -536,34 +532,30 @@ class GsonTypeRoundTripTest {
         @Test
         void doubleAndFloatInnerTypesFailToCreateTheirTable() {
             SessionManager manager = new SessionManager();
-
-            JpaConfig config = JpaConfig.common(
-                H2MemoryDriver.named("floating_optional")
-                    .isUsing2ndLevelCache(false)
-                    .isUsingQueryCache(false)
-                    .withDefaultCacheExpiryMs(0)
-                    .build()
-            )
-                .withRepositoryFactory(
-                    RepositoryFactory.of(FloatingOptionalModel.class)
-                )
-                .build();
+            ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(FloatingOptionalModel.class);
+            RelationalSource floating = H2MemoryDriver.named("floating_optional")
+                .isUsing2ndLevelCache(false)
+                .isUsingQueryCache(false)
+                .withDefaultCacheExpiryMs(0)
+                .build()
+                .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
             try {
                 // Schema export logs the failed CREATE and carries on, so the table is absent. The
                 // hydration pass then reads every registered type, which is where the absence
                 // surfaces: connecting fails rather than mounting a session whose first query on
                 // this type would have.
-                assertThrows(JpaException.class, () -> manager.connect(config));
+                assertThrows(JpaException.class, () -> manager.connect(new JpaConfig(models, floating)));
             } finally {
                 manager.shutdown();
+                floating.close();
             }
         }
 
     }
 
     private static @NotNull PersistentClass entity() {
-        return session.getMetadata().getEntityBinding(GsonFixtureModel.class.getName());
+        return database.getMetadata().getEntityBinding(GsonFixtureModel.class.getName());
     }
 
     private static @NotNull BasicValue basicValue(@NotNull String property) {
@@ -600,7 +592,7 @@ class GsonTypeRoundTripTest {
     private static @NotNull Map<String, Integer> columnTypes() {
         Map<String, Integer> types = new LinkedHashMap<>();
 
-        session.with(s -> {
+        database.with(s -> {
             s.doWork(connection -> {
                 try (
                     Statement statement = connection.createStatement();
@@ -620,7 +612,7 @@ class GsonTypeRoundTripTest {
     private static String rawColumn(@NotNull String column, int id) {
         String[] holder = new String[1];
 
-        session.with(s -> {
+        database.with(s -> {
             s.doWork(connection -> {
                 try (
                     Statement statement = connection.createStatement();
@@ -636,7 +628,7 @@ class GsonTypeRoundTripTest {
     }
 
     private static void execute(@NotNull String sql) {
-        session.with(s -> {
+        database.with(s -> {
             s.doWork(connection -> {
                 try (Statement statement = connection.createStatement()) {
                     statement.executeUpdate(sql);
@@ -646,7 +638,7 @@ class GsonTypeRoundTripTest {
     }
 
     private static @NotNull GsonFixtureModel load(int id) {
-        try (Session scoped = session.openSession()) {
+        try (Session scoped = database.openSession()) {
             GsonFixtureModel row = scoped.find(GsonFixtureModel.class, id);
             assertNotNull(row, "no row with id " + id);
             return row;
@@ -657,7 +649,7 @@ class GsonTypeRoundTripTest {
         GsonFixtureModel row = new GsonFixtureModel();
         row.setId(id);
         populate.accept(row);
-        session.transaction(s -> { s.persist(row); });
+        database.transaction(s -> { s.persist(row); });
     }
 
     private static @NotNull GsonFixtureModel roundTrip(int id, @NotNull Consumer<GsonFixtureModel> populate) {

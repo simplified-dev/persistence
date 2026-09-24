@@ -1,6 +1,7 @@
 package dev.simplified.persistence;
 
 import dev.simplified.collection.Concurrent;
+import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.reflection.Reflection;
@@ -10,6 +11,7 @@ import jakarta.persistence.Table;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.Serializable;
+import java.util.Comparator;
 
 /**
  * Root marker interface for every model the persistence layer holds.
@@ -23,6 +25,26 @@ import java.io.Serializable;
  */
 @SuppressWarnings("all")
 public interface JpaModel extends Serializable {
+
+    /**
+     * Discovers every model under the anchor's package, in a stable order.
+     *
+     * <p>The order is by class name and carries no meaning. A hydration reads every type and only
+     * then links every type, so nothing needs a parent to precede its children and there is no
+     * dependency graph to sort - which is also what stops two types that reach each other from
+     * reading as a cycle.
+     *
+     * @param anchor the class whose package scopes the scan
+     * @return the discovered model classes, ordered by name
+     */
+    static @NotNull ConcurrentList<Class<JpaModel>> resolveModels(@NotNull Class<? extends JpaModel> anchor) {
+        return Reflection.getResources()
+            .filterPackage(anchor)
+            .getTypesOf(JpaModel.class)
+            .stream()
+            .sorted(Comparator.comparing(Class::getName))
+            .collect(Concurrent.toUnmodifiableList());
+    }
 
     /**
      * The logical document a type is published as, which is the table it declares.

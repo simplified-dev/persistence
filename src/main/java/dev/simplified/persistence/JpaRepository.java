@@ -46,7 +46,7 @@ import java.util.Optional;
 public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
     /**
-     * The owning session providing configuration and, for a relational origin, Hibernate access.
+     * The owning session, whose other repositories a link resolves against.
      */
     private final @NotNull JpaSession session;
 

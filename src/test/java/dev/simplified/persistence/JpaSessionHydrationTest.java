@@ -2,11 +2,14 @@ package dev.simplified.persistence;
 
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.Source;
+import dev.simplified.util.Logging;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -28,35 +31,35 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class JpaSessionHydrationTest {
 
     private SessionManager sessionManager;
+    private RelationalSource database;
 
     @AfterEach
     void tearDown() {
         if (this.sessionManager != null)
             this.sessionManager.shutdown();
+
+        if (this.database != null)
+            this.database.close();
     }
 
     /**
-     * Connects a session over the two test models reading from the given source.
+     * Connects a session over the test models reading from the given source.
      */
-    private @NotNull JpaSession connect(@NotNull String schema, @NotNull Source source) {
-        return this.connect(schema, RepositoryFactory.of(TestParentModel.class, source));
+    private @NotNull JpaSession connect(@NotNull Source source) {
+        this.sessionManager = new SessionManager();
+        return this.sessionManager.connect(new JpaConfig(JpaModel.resolveModels(TestParentModel.class), source));
     }
 
     /**
-     * Connects a session over the two test models reading from the database it opens.
+     * Connects a session over the test models reading from a database this opens.
      */
     private @NotNull JpaSession connect(@NotNull String schema) {
-        return this.connect(schema, RepositoryFactory.of(TestParentModel.class));
-    }
+        ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(TestParentModel.class);
+        this.database = H2MemoryDriver.named(schema)
+            .build()
+            .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
-    private @NotNull JpaSession connect(@NotNull String schema, @NotNull RepositoryFactory factory) {
-        this.sessionManager = new SessionManager();
-
-        return this.sessionManager.connect(
-            JpaConfig.common(H2MemoryDriver.named(schema).build())
-                .withRepositoryFactory(factory)
-                .build()
-        );
+        return this.connect(this.database);
     }
 
     @Test
@@ -65,7 +68,7 @@ class JpaSessionHydrationTest {
         AtomicInteger parentReads = new AtomicInteger();
         AtomicInteger childReads = new AtomicInteger();
 
-        JpaSession session = this.connect("hydration_reads_once", new Source() {
+        JpaSession session = this.connect(new Source() {
 
             @Override
             @SuppressWarnings("unchecked")
@@ -106,8 +109,8 @@ class JpaSessionHydrationTest {
     @Test
     @DisplayName("every type reports a published generation once connected")
     void everyTypeIsCurrentAfterConnect() {
-        // No source is named, so the rows are the database's, and the session substitutes the one it
-        // opened. An empty table still publishes a generation.
+        // The session reads from the database this opened. An empty table still publishes a
+        // generation.
         JpaSession session = this.connect("hydration_states");
 
         assertThat(session.getRepository(TestParentModel.class).getState(), equalTo(HydrationState.CURRENT));
@@ -121,7 +124,7 @@ class JpaSessionHydrationTest {
 
         JpaException thrown = assertThrows(
             JpaException.class,
-            () -> this.connect("hydration_failure", new Source() {
+            () -> this.connect(new Source() {
 
                 @Override
                 public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
@@ -137,7 +140,7 @@ class JpaSessionHydrationTest {
         // The failure has to name the type, because a pass over every model that reports only "boom"
         // says nothing about which origin is down. The pass aborts on the first type it reaches, and
         // the registration order is the discovery order rather than anything this test chooses.
-        String firstRead = RepositoryFactory.resolveModels(TestParentModel.class).getFirst().getName();
+        String firstRead = JpaModel.resolveModels(TestParentModel.class).getFirst().getName();
         assertThat(thrown.getMessage().contains(firstRead), equalTo(true));
     }
 
