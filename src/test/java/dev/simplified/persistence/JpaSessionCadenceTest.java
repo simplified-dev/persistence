@@ -45,9 +45,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * How a session's background cadence behaves: a cadenced type is re-read with no write and takes the
  * types linking into it along, a failed tick degrades what it covered and is logged naming it, and a
- * later tick recovers it, a generation standing past its stale threshold reports it on read while one
- * whose cadence falls between two ticks never does, and a shut-down session stops reading and is
- * released.
+ * later tick recovers it, as it does after a landed write whose rebuild failed, a generation standing
+ * past its stale threshold reports it on read while one whose cadence falls between two ticks never
+ * does, and a shut-down session stops reading and is released.
  *
  * <p>Against a source that fingerprints its types, a tick reads only what moved: an unmoved due type
  * is confirmed rather than read however often the cadence ticks, a moved one is rebuilt with its
@@ -409,6 +409,52 @@ class JpaSessionCadenceTest {
         awaitUntil(() -> this.corpus.asks() >= asks + 2, "the cadence stopped asking");
         assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(reads + 1));
         assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(dependentReads + 1));
+    }
+
+    @Test
+    @DisplayName("a landed write whose rebuild fails returns and is logged naming every type it covered, and a later tick serves the write")
+    void aLandedWriteWhoseRebuildFailsIsServedByALaterTick() {
+        this.fingerprintBoth();
+        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
+        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
+        Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();
+        CadencedRow written = new CadencedRow();
+        written.setId("r1");
+        written.setName("two");
+
+        this.corpus.failing = CadencedRow.class;
+        session.write(WriteRequest.upsert(CadencedRow.class, List.of(written)));
+
+        // A tick while the read still fails passes through REFRESHING and fails again, so the
+        // covered types are waited for rather than read once.
+        assertThat(this.corpus.name, equalTo("two"));
+        awaitUntil(
+            () -> rows.getState() == HydrationState.DEGRADED && dependents.getState() == HydrationState.DEGRADED,
+            "the failed rebuild never left the covered types DEGRADED"
+        );
+        assertThat(rows.getRows().getFirst().getName(), equalTo("one"));
+
+        awaitUntil(
+            () -> this.logged.stream().anyMatch(event -> event.getMessage().getFormattedMessage().startsWith("A write to")),
+            "the failed rebuild after the write was never logged"
+        );
+        LogEvent failure = this.logged.stream()
+            .filter(event -> event.getMessage().getFormattedMessage().startsWith("A write to"))
+            .findFirst()
+            .orElseThrow();
+        assertThat(failure.getLevel(), equalTo(Level.ERROR));
+        assertThat(failure.getMessage().getFormattedMessage(), allOf(
+            containsString(CadencedRow.class.getName()),
+            containsString(CadencedDependent.class.getName())
+        ));
+        assertThat(failure.getThrown(), instanceOf(JpaException.class));
+
+        this.corpus.failing = null;
+        awaitUntil(
+            () -> rows.getState() == HydrationState.CURRENT && dependents.getState() == HydrationState.CURRENT,
+            "no later tick restored CURRENT"
+        );
+        assertThat(rows.getRows().getFirst().getName(), equalTo("two"));
     }
 
     @Test

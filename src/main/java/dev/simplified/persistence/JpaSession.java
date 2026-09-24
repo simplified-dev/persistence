@@ -351,16 +351,20 @@ public final class JpaSession {
      * the rows before the write; forgetting it leaves each of those types to be read again at its
      * next {@link Hydration} tick, whatever its fingerprint says then.
      *
+     * <p>A rebuild that fails after the write is not a failure of the write. It is logged with the
+     * types it covered, and the write returns. Every one of those types stays
+     * {@link HydrationState#DEGRADED}, serving the generation before the write, until a later write
+     * or a {@link Hydration} tick covers it, which {@link Repository#getState()} reports. An
+     * {@link Error} from the rebuild is not caught.
+     *
      * <p>The request names the exact type it writes. A subtype registered in its place is not written
      * through a supertype, because the rows would reach the source under one type and be rebuilt under
      * another.
      *
      * @param request the write to apply
      * @param <M> the entity type
-     * @throws JpaException if the session is inactive, the type is not registered exactly, or the
-     *         source holds no write instruction; or if the rebuild after an applied write fails, in
-     *         which case the write has landed and every type the rebuild covered reports
-     *         {@link HydrationState#DEGRADED}
+     * @throws JpaException if the session is inactive, the type is not registered exactly, the source
+     *         holds no write instruction, or the write fails
      */
     @SuppressWarnings("unchecked")
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
@@ -382,11 +386,19 @@ public final class JpaSession {
 
         synchronized (this) {
             ConcurrentList<Class<JpaModel>> written = Concurrent.newList(type);
+            ConcurrentList<Class<JpaModel>> covered = this.covering(written);
 
             try {
                 this.hydrate(written);
+            } catch (RuntimeException exception) {
+                log.error(
+                    "A write to '{}' landed, but its rebuild failed and left {} on their previous generation",
+                    type.getName(),
+                    covered.stream().map(Class::getName).collect(Collectors.joining(", ")),
+                    exception
+                );
             } finally {
-                this.covering(written).forEach(this.fingerprints::remove);
+                covered.forEach(this.fingerprints::remove);
             }
         }
     }

@@ -4,6 +4,7 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.reflection.Reflection;
@@ -18,9 +19,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * A writable source held in memory over the linked models, answering fresh instances on every read
  * the way a parsed document does.
  *
- * <p>It counts reads per type, can be told to fail one type's read or to answer a parent row that
- * carries no id, and can park a parent read behind a gate while it records how many reads were ever
- * in flight at once.
+ * <p>It counts reads per type, can be told to fail one type's read, to answer a parent row that
+ * carries no id or to refuse a write, and can park a parent read behind a gate while it records how
+ * many reads were ever in flight at once.
  */
 public final class LinkedCorpus implements Source.Writable {
 
@@ -63,6 +64,11 @@ public final class LinkedCorpus implements Source.Writable {
      * Whether a parent read also answers one row carrying no id.
      */
     public volatile boolean parentWithoutId;
+
+    /**
+     * Whether a write is refused before it changes anything.
+     */
+    public volatile boolean refusing;
 
     /**
      * The gate a parent read waits behind, or {@code null} for none.
@@ -129,7 +135,10 @@ public final class LinkedCorpus implements Source.Writable {
     }
 
     @Override
-    public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
+    public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
+        if (this.refusing)
+            throw new JpaException("The origin refused '%s'", request.type().getSimpleName());
+
         request.rows().forEach(row -> {
             if (row instanceof LinkedParent parent)
                 this.parents.put(parent.getId(), parent.getName());

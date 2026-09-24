@@ -77,37 +77,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN** - the policy is undecided, per spine §12
 
-> #### A write that lands can still throw, and the queue re-applies it
-> A write rebuilds the written type and every type linking into it, after the origin has accepted the
-> write. A write to `Item` re-reads six documents, one to `Region` eight. If any of them fails to read
-> or link, `JpaSession.write` throws even though the write itself landed, and the whole rebuild
-> publishes nothing, so the written type keeps its pre-write generation too. `WriteQueueConsumer`
-> treats the throw as a failed write, reschedules it and re-applies it - one more commit per retry -
-> until a rebuild succeeds or the retry cap dead-letters a write that landed. Like every write it
-> reschedules, a re-applied one re-sends the rows it was enqueued with, so it reverts a later write to
-> the same row that lands during the backoff. The bot's `LinkCommand` and `RepGiveCommand` let the
-> same throw escape the command for a row that was saved.
->
-> Only a cadence retries the rebuild itself. Every corpus type declares a ten-minute one, and a tick
-> re-reads a `DEGRADED` type whatever its fingerprint says, so a corpus type that fails to rebuild
-> serves its pre-write rows until its next tick. A type without a `@Hydration` cadence stays
-> `DEGRADED` until another write reaches its rebuild set or a type it links into is rebuilt on its
-> own cadence. The corpus writer's session serves no reads - `data` connects it on a private
-> `SessionManager` and only writes through it - so there the re-apply recovers a generation nobody
-> reads; the stale rows matter where a written session is also read, which today is the bot's.
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:366` - `write(WriteRequest)`,
->   `:164` - `hydrate(ConcurrentList)`;
->   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:192` - `apply`,
->   which reschedules at `:214`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:46` - `process`, which
->   writes at `:72` and `:87`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepGiveCommand.java:45` -
->   `process`, which writes at `:84`
-> - Type: **RISK**
-> - Status: **OPEN** - the write and its rebuild report through one exception, and only a cadence
->   retries a failed rebuild
-
 > #### A collection-valued association is not followed by the rebuild rule
 > A write rebuilds every type linking into the written one through a `@Linked` field, or a field
 > carrying `@ManyToOne` or `@OneToOne`. Following JPA associations at all departs from the rule the
@@ -123,7 +92,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `ClassCastException` out of `connect` rather than a `JpaException`. No `@Linked` field in the
 > workspace has one.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:443` - `dependentsOf`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:455` - `dependentsOf`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:339` - `targetOf`;
 >   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:239` - `read`
 > - Type: **GAP**

@@ -149,7 +149,7 @@ public final class SessionManager {
      * @param request the write to apply
      * @param <M> the entity type
      * @throws JpaException if no active session registers the type, its source holds no write
-     *         instruction, or the rebuild after the applied write fails
+     *         instruction, or the write fails
      */
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())

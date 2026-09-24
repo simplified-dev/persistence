@@ -38,8 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * How a session rebuilds a generation: nothing is published before its links resolve, a write
- * rebuilds every type linking into the written one, a failed rebuild publishes nothing and says so,
- * rebuilds run one at a time, and a write that names no rows rebuilds nothing.
+ * rebuilds every type linking into the written one, a landed write whose rebuild fails returns having
+ * published nothing and says so on every covered type, a write the origin refuses throws and rebuilds
+ * nothing, rebuilds run one at a time, and a write that names no rows rebuilds nothing.
  *
  * <p>The session-level cases run twice, with the models registered parent first and child first, so
  * none of them rests on the order discovery happens to answer.
@@ -157,19 +158,19 @@ class JpaSessionRebuildTest {
         }
 
         @Test
-        @DisplayName("a rebuild that fails to read publishes nothing and reports the failure on every covered type")
+        @DisplayName("a landed write whose rebuild fails to read returns, publishes nothing and reports the failure on every covered type")
         void aFailedReadKeepsEveryPreviousGeneration() {
             this.assertAFailedWriteKeepsEverything(() -> this.corpus.failing = LinkedParent.class);
         }
 
         @Test
-        @DisplayName("a rebuild that fails to link publishes nothing and reports the failure on every covered type")
+        @DisplayName("a landed write whose rebuild fails to link returns, publishes nothing and reports the failure on every covered type")
         void aFailedLinkKeepsEveryPreviousGeneration() {
             this.assertAFailedWriteKeepsEverything(() -> this.corpus.parentWithoutId = true);
         }
 
         @Test
-        @DisplayName("a transitive dependent that fails to rebuild keeps the written type's previous generation too")
+        @DisplayName("a landed write whose transitive dependent fails to rebuild returns and keeps the written type's previous generation too")
         void aFailingDependentPublishesNothing() {
             this.assertAFailedWriteKeepsEverything(() -> this.corpus.failing = LinkedGrandchild.class);
         }
@@ -183,8 +184,9 @@ class JpaSessionRebuildTest {
             LinkedGrandchild grandchild = grandchildren.getRows().getFirst();
             breakTheSource.run();
 
-            assertThrows(JpaException.class, () -> this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno")))));
+            this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno"))));
 
+            assertThat(this.corpus.parents.get("p1"), equalTo("uno"));
             assertThat(parents.getState(), equalTo(HydrationState.DEGRADED));
             assertThat(children.getState(), equalTo(HydrationState.DEGRADED));
             assertThat(grandchildren.getState(), equalTo(HydrationState.DEGRADED));
@@ -193,6 +195,26 @@ class JpaSessionRebuildTest {
             assertThat(children.getRows().getFirst(), sameInstance(child));
             assertThat(children.getRows().getFirst().getParent(), sameInstance(parent));
             assertThat(grandchildren.getRows().getFirst(), sameInstance(grandchild));
+        }
+
+        @Test
+        @DisplayName("a write the origin refuses still throws, and rebuilds nothing")
+        void aWriteTheOriginRefusesStillThrows() {
+            Repository<LinkedParent> parents = this.repository(LinkedParent.class);
+            LinkedParent parent = parents.getRows().getFirst();
+            int parentReads = this.corpus.readsOf(LinkedParent.class);
+            int childReads = this.corpus.readsOf(LinkedChild.class);
+            int grandchildReads = this.corpus.readsOf(LinkedGrandchild.class);
+            this.corpus.refusing = true;
+
+            assertThrows(JpaException.class, () -> this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno")))));
+
+            assertThat(this.corpus.readsOf(LinkedParent.class), equalTo(parentReads));
+            assertThat(this.corpus.readsOf(LinkedChild.class), equalTo(childReads));
+            assertThat(this.corpus.readsOf(LinkedGrandchild.class), equalTo(grandchildReads));
+            assertThat(parents.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(parents.getRows().getFirst(), sameInstance(parent));
+            assertThat(this.corpus.parents.get("p1"), equalTo("one"));
         }
 
         @Test
