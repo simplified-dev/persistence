@@ -31,12 +31,14 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > persistence also pins `scheduler` at `21570df`, its `origin/master`, where `Scheduler.shutdown()`
 > leaves its JVM shutdown hook registered and so keeps a shut-down session with a `@Hydration` cadence
 > reachable until exit. The hook is removed at `4c401ab`, on `scheduler`'s unpushed
-> `fix/shutdown-hook`, so a shut-down session is released only where that commit is substituted, and
-> `:25` has to move to the sha that branch builds.
+> `fix/shutdown-hook`, whose tip is `1c0dc05`, so a shut-down session is released only where that
+> branch is substituted. `:25` has to move to the `scheduler` sha built once that branch is on
+> `master` with its own `collections` pin moved (step 2 below), not to a build of the branch itself,
+> which still pins `collections` `9696ca5`.
 >
 > Everything therefore verifies only through the root composite at `W:/Workspace/Java/Simplified`,
 > which substitutes the local projects - `utils` at its working tree, `5d14f56`, and `scheduler` at
-> `4c401ab` among them, so the composite masks persistence's `utils` and `scheduler` pins as well:
+> `1c0dc05` among them, so the composite masks persistence's `utils` and `scheduler` pins as well:
 >
 > ```
 > ./gradlew :Simplified-Dev:scheduler:test :Simplified-Dev:persistence:test \
@@ -73,14 +75,25 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    `3d8af56`; `nbt-factory`, which pins `utils` alone and falls outside that order, is the eleventh
 >    and moves before `asset-renderer`, which pins it. `scheduler` finishes `fix/shutdown-hook` into
 >    `master` before its `collections` pin moves, so the one sha it builds carries the hook's removal
->    as well.
+>    as well. Besides `scheduler`, two of the thirteen are checked out on branches rather than
+>    `master`. `discord4j-framework`'s `9696ca5` pins at `:43-49` are on `offline-test-harness`,
+>    49 commits ahead of its upstream, while its `master` pins `collections` `2f2aa58` at `:38-44`,
+>    and pushing the branch publishes the `TreePage` and `ItemHandler` removals the `bot` entry
+>    names. `asset-renderer` is on `refactor/package-redesign`, 12 commits past `origin/master`,
+>    which carries the same pins at the same lines. Which branch each of the two re-pins and builds
+>    on is left to the user.
 > 3. The second pass. Each library step 2 rebuilt is a new sha the chain has to follow. persistence
 >    moves `:23` `reflection`, `:24` `gson-extras` and `:25` `scheduler`, and is pushed and built again.
 >    github follows `client` and `gson-extras`. Then `SkyBlock-Simplified/api`, skyblock, hypixel and
 >    data, in that order, each move their persistence pin and every pin on a module step 2 or this
 >    pass rebuilt; `SkyBlock-Simplified/api` lands on `master` again, so data's `master-SNAPSHOT`
 >    follows it. bot and `SkyBlock-Simplified/server`, which pin modules from both sides, move last,
->    and bot's cannot be verified until it builds (below).
+>    and bot's cannot be verified until it builds (below). `bot` also takes `manager`, skyblock,
+>    mojang, `SkyBlock-Simplified/api`, hypixel, `asset-renderer` and `discord4j-framework` as
+>    `master-SNAPSHOT`, so it reaches one sha per artifact only once each of those modules' `master`
+>    carries its rebuild, or once those lines pin shas. skyblock and hypixel are built from
+>    `feat/indexing` here, and their `origin/master` is still `d566734` and `d20adcd`, so until they
+>    land on `master` bot's snapshots resolve the jars from before the chain.
 >
 > - Affected: `build.gradle.kts:21-25`; `Simplified-Api/github/build.gradle.kts:35-37`;
 >   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38-42`, `:46`;
@@ -96,12 +109,12 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `Simplified-Api/mojang/build.gradle.kts:35-39`, `:43`;
 >   `Simplified-Dev/spring-framework/build.gradle.kts:40-41`;
 >   `Minecraft-Library/asset-renderer/build.gradle.kts:174-179`, `:183`, `:189`, `:195`;
->   `Simplified-Dev/discord4j-framework/build.gradle.kts:43-49`;
->   `Minecraft-Library/nbt-factory/build.gradle.kts:38`;
->   `SkyBlock-Simplified/bot/build.gradle.kts:48-49`, `:51`;
+>   `Simplified-Dev/discord4j-framework/build.gradle.kts:43-49` on `offline-test-harness`, `:38-44` on
+>   `master`; `Minecraft-Library/nbt-factory/build.gradle.kts:38`;
+>   `SkyBlock-Simplified/bot/build.gradle.kts:48-51`, `:54-57`, `:60-61`;
 >   `SkyBlock-Simplified/server/build.gradle.kts:42-44`, `:47-50`, `:53`;
 >   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`;
->   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `4c401ab`
+>   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `1c0dc05`
 > - Type: **GAP**
 > - Status: **OPEN** - needs the user's pushes and JitPack builds, `collections` first
 
@@ -120,6 +133,52 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:130` -
 >   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
+> - Type: **RISK**
+> - Status: **OPEN**
+
+> #### A corpus write's own rebuild reads the document from before the write
+> `JpaSession.write` rebuilds the written type once the write lands. Over the corpus's writing
+> origin that rebuild reads the rows from before the write. `CorpusOrigin.Writing.layersOf` polls the
+> branch tip before the write edits the document, and again when the rebuild resolves its layers,
+> and the second tip request is answered from the client's response cache, which keeps GitHub's
+> answer for its `max-age` of a minute. As far as the corpus can tell the branch has not moved, so
+> the held catalogue stays at the commit before the write and `CorpusOrigin.read` reads every layer
+> at that commit. The rebuild republishes the pre-write rows, and every type it covers is relinked
+> to them.
+>
+> It heals at the written type's next due tick. The rebuild forgets the fingerprint each covered type
+> was read under, so that tick reads the type again whatever its fingerprint says, and by then the
+> cached tip has expired. Until then the writing session serves the rows from before its own write -
+> for the corpus's ten-minute cadence, between ten and twenty minutes, since the rebuild's
+> publication restarts the cadence - and a type with no cadence of its own keeps them until a later
+> rebuild covers it or the session connects again. No production session both writes and reads the
+> corpus: `SkyBlockData.connect()` reads through a source with no write half, and data's
+> `WriteQueueConsumer` writes through the source `SkyBlockData.writing(...)` returns with no session
+> over it.
+>
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
+>   `Writing.layersOf`, `:57` - `read`;
+>   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:222` - `tip`,
+>   `:279` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`
+> - Type: **RISK**
+> - Status: **OPEN**
+
+> #### A rescheduled queue write re-sends its rows, and can revert a later write
+> data's `WriteQueueConsumer` puts a failed write back on its retry map with the rows it was enqueued
+> with, and a retry writes those rows again whatever has landed since. A later write to the same row
+> that lands while the first waits out its backoff is reverted when the retry lands. Within one drain
+> every ready retry is applied after the one fresh envelope the cycle polled, and the source keys a
+> request's rows with the later one winning, so a retry of a row lands over a fresher write to it in
+> the same drain as well.
+>
+> A write whose response is lost after GitHub committed it, such as a timeout reading the answer to
+> the PUT, throws like one that never landed. It is counted as a failure and retried as one,
+> re-sending rows that are already on the branch, which reverts any write to the same rows that
+> landed in between.
+>
+> - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:182` -
+>   `cycle`, `:218` - `apply`, `:265` - `reschedule`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:167` - `Writable.write`
 > - Type: **RISK**
 > - Status: **OPEN**
 
