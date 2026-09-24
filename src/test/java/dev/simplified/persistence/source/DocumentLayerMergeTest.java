@@ -235,6 +235,40 @@ class DocumentLayerMergeTest {
     }
 
     @Test
+    @DisplayName("one upsert naming keys different layers own, and a new key, writes each owning layer once, in merge order")
+    void mixedOwnerUpsertWritesEachOwner() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"}]",
+            "[{\"id\":\"B\",\"name\":\"b\"}]"
+        );
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+
+        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "a2"), row("B", "b2"), row("C", "c"))));
+
+        assertThat(origin.written, contains("layer-0.json", "layer-1.json"));
+        assertThat(idsIn(origin, "layer-0.json"), contains("A"));
+        assertThat(idsIn(origin, "layer-1.json"), contains("B", "C"));
+        assertThat(
+            source.read(LayeredRow.class).stream().map(LayeredRow::getName).toList(),
+            contains("a2", "b2", "c")
+        );
+    }
+
+    @Test
+    @DisplayName("a delete of a key no layer carries writes nothing")
+    void deleteOfAnUncarriedKeyWritesNothing() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"}]",
+            "[{\"id\":\"B\",\"name\":\"b\"}]"
+        );
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+
+        source.write(WriteRequest.delete(LayeredRow.class, List.of(row("Z", "z"))));
+
+        assertThat(origin.written, is(empty()));
+    }
+
+    @Test
     @DisplayName("a written row replaces the one already under its key rather than joining it")
     void writeOverridesByKey() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]");
@@ -263,13 +297,14 @@ class DocumentLayerMergeTest {
     }
 
     @Test
-    @DisplayName("a write naming no rows reaches the origin at all")
+    @DisplayName("a write naming no rows does not reach the origin at all")
     void emptyWriteIsSilence() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
         Source.Writable source = new DocumentSource.Writable(origin, GSON);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of()));
 
+        assertThat(origin.written, is(empty()));
         assertThat(origin.bodies.get("layer-0.json"), equalTo("[{\"id\":\"A\",\"name\":\"a\"}]"));
     }
 
