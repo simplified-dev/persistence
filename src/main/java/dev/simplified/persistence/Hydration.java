@@ -11,9 +11,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * Declares when a type's rows are rebuilt in the background.
  *
- * <p>Absence means hydrate once and never again, which is the right answer for a corpus that changes
- * on someone else's schedule and is told about it. A type asks for a cadence when it has a reason to,
- * rather than inheriting one it never chose.
+ * <p>Absence means no background cadence: the type is read when its session connects and rebuilt only
+ * when it, or a type it links into, is written through the session. That is the right answer for a
+ * corpus that changes on someone else's schedule and is told about it. A type asks for a cadence when
+ * it has a reason to, rather than inheriting one it never chose.
  *
  * <pre>{@code
  * @Hydration(every = 6, unit = TimeUnit.HOURS)
@@ -31,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 public @interface Hydration {
 
     /**
-     * How long to wait between rebuilds, or {@code 0} to hydrate once and never again.
+     * How long to wait between rebuilds, or {@code 0} for no background cadence.
      */
     long every() default 0;
 

@@ -50,7 +50,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     @Getter private final @NotNull Class<T> type;
 
     /**
-     * How long to wait between rebuilds, or {@link Duration#ZERO} to hydrate once.
+     * How long to wait between rebuilds, or {@link Duration#ZERO} for no background cadence.
      */
     @Getter(AccessLevel.PACKAGE) private final @NotNull Duration hydrationInterval;
 
@@ -77,7 +77,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * Creates a repository for the given type.
      *
-     * <p>No I/O runs here. The generation is built when the session's hydrator reaches this type, so
+     * <p>No I/O runs here. The generation is built when the session reaches this type, so
      * a repository exists and answers {@link HydrationState#UNHYDRATED} before it holds anything.
      *
      * @param type the entity class
@@ -278,7 +278,8 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Reads the type a linking field resolves to, which is its element type when it holds many.
+     * Reads the type a linking or associating field resolves to, which is its element type when it
+     * holds many.
      *
      * <p>Read through {@link FieldAccessor#getFieldType()} rather than {@code getType()}, which
      * answers the class that declares the field.

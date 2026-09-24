@@ -629,7 +629,7 @@ public final class GsonValueType<T> implements UserType<T> {
         /**
          * Registers a type per parameterisation recorded, plus any fallback the shape needs.
          *
-         * @param gson the session's Gson instance
+         * @param gson the parser the database was opened with
          * @param builder the metadata builder to register with
          */
         void register(@NotNull Gson gson, @NotNull MetadataBuilder builder);

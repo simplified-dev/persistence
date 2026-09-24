@@ -2,7 +2,7 @@ package dev.simplified.persistence.type;
 
 import com.google.gson.Gson;
 import dev.simplified.persistence.JpaModel;
-import dev.simplified.persistence.JpaSession;
+import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import jakarta.persistence.Convert;
@@ -29,9 +29,9 @@ import java.util.function.BiConsumer;
 /**
  * Pluggable registration interface for Hibernate custom types.
  * <p>
- * Implementations are discovered reflectively by {@link JpaSession} via classpath
- * scanning of this package - adding a new registrar requires no changes to
- * {@code JpaSession}.
+ * Implementations are discovered reflectively by {@link RelationalSource} via classpath
+ * scanning of this package when a database is opened - adding a new registrar requires no
+ * changes to it.
  * <p>
  * Lifecycle:
  * <ol>
@@ -59,8 +59,8 @@ public interface TypeRegistrar {
     /**
      * Scans entity model fields to discover types that need custom Hibernate type registration.
      *
-     * @param gson the session's Gson instance for constructing type handlers
-     * @param models the topologically sorted entity classes to inspect
+     * @param gson the parser the database was opened with, for constructing type handlers
+     * @param models the types the database maps
      */
     void scan(@NotNull Gson gson, @NotNull Iterable<Class<JpaModel>> models);
 

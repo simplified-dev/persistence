@@ -25,7 +25,7 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), cust
 - **Repository pattern** - `Repository` holds one generation of a model's rows in memory; every `Sortable` finder answers from it without I/O, and a property declaring `@Indexed` is answered by a hash probe
 - **Sessions** - `JpaSession` hydrates every type a `JpaConfig` registers from its one `Source`, resolves links before it publishes a generation, and rebuilds a written type together with every type that links into it
 - **Session management** - `SessionManager` registers a session once it has hydrated, looks repositories up and routes writes across every session it holds, and shuts them down together
-- **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none hydrates once
+- **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none has no background rebuild, and is rebuilt only when it, or a type it links into, is written through its session
 - **Links** - `@Linked` fills a field with the row, or rows, its id property names, and keeps that field out of serialization
 - **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
 - **L2 caching** - EhCache- or Hazelcast-backed second-level cache for an open database, with a per-type TTL taken from `@Hydration` and configurable cache concurrency strategies
@@ -107,12 +107,6 @@ public class User implements JpaModel {
 Open a database and connect a session over it. The caller opens the database, hands it to the session as the source every registered type is read from, and closes it once the session is shut down:
 
 ```java
-import dev.simplified.persistence.JpaConfig;
-import dev.simplified.persistence.JpaModel;
-import dev.simplified.persistence.SessionManager;
-import dev.simplified.persistence.driver.MariaDbDriver;
-import dev.simplified.persistence.source.RelationalSource;
-
 ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(User.class);
 RelationalSource database = MariaDbDriver.at("localhost", "mydb")
     .as("root", "secret")
@@ -127,9 +121,6 @@ The list `open` maps and the list a `JpaConfig` registers are separate: a type r
 Query the held rows, and write through the session so the generation follows the write:
 
 ```java
-import dev.simplified.persistence.Repository;
-import dev.simplified.persistence.source.WriteRequest;
-
 Repository<User> users = sessionManager.getRepository(User.class);
 ConcurrentList<User> all = users.findAll();
 

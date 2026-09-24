@@ -7,8 +7,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > #### A registered type reads stale after a write that bypasses its session
 > A repository holds one generation of rows and every finder answers from it, so a write that reaches
 > the origin without going through `JpaSession.write(WriteRequest)` leaves the held rows describing
-> the state before it. With `@Hydration` absent - which is the default, meaning hydrate once - they
-> stay that way until something rebuilds the type.
+> the state before it. With `@Hydration` absent - which is the default, meaning no background cadence -
+> they stay that way until something rebuilds the type.
 >
 > `JpaSession.write` is the supported path and closes this: it applies the write through the session's
 > `Source.Writable` and then rebuilds the type and every type linking into it. `SessionManager.write`
@@ -100,10 +100,15 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > throw as a failed write, reschedules it and re-applies it - one more commit per retry - until the
 > retry cap dead-letters it.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:224` - `write(WriteRequest)`;
->   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:208-211`
+> Nothing retries the rebuild itself. A type without a `@Hydration` cadence that fails to rebuild
+> stays `DEGRADED`, serving its pre-write rows, until another write reaches its rebuild set; the corpus
+> writer recovers only because the queue re-applies the write.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java` - `write(WriteRequest)`,
+>   `hydrate(ConcurrentList)`; `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:208-211`
 > - Type: **RISK**
-> - Status: **OPEN** - the write and its rebuild report through one exception
+> - Status: **OPEN** - the write and its rebuild report through one exception, and a failed rebuild is
+>   not retried
 
 > #### The caller owns closing a database, including after a failed connect
 > A session never opens or closes its source. `SessionManager.connect` shuts down a session whose first
@@ -116,6 +121,65 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:305` - `close()`
 > - Type: **RISK**
 > - Status: **OPEN** - documented on `connect` and `open`; nothing enforces it
+
+> #### The background cadence has never run
+> No model or fixture in the workspace declares `@Hydration`, so the scheduler a session builds for a
+> cadence, `hydrateDue`, `isDue`, `isPastStaleness`, `markStale` and the `STALE` state have never
+> executed, and no test would notice if they broke. A tick that fails is also silent: the exception
+> leaves `hydrateDue` into the scheduler, which only counts it. Whether the cadence stays at all is
+> undecided - every current consumer is rebuilt by writes alone.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java` - `cacheRepositories()`
+>   scheduling at `:121`, `hydrateDue()` at `:198`; `src/main/java/dev/simplified/persistence/Hydration.java`
+> - Type: **GAP**
+> - Status: **OPEN** - keep and test it, or delete it
+
+> #### A collection-valued association is not followed by the rebuild rule
+> A write rebuilds every type linking into the written one through a `@Linked` field, a `@ManyToOne`
+> or a `@OneToOne`. A `@OneToMany` or `@ManyToMany` is not followed, because its target is read off
+> the declared element type, which a raw, wildcard or map-typed collection does not give. No model in
+> the workspace declares one; the first that does keeps the pre-write rows of its collection after a
+> write to the element type.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:306` - `dependentsOf`;
+>   `src/main/java/dev/simplified/persistence/JpaRepository.java` - `targetOf`
+> - Type: **GAP**
+> - Status: **OPEN** - no model needs it yet
+
+> #### Closing one database destroys the cache regions another open database uses
+> Every `JpaCacheProvider` names no configuration resource, so every database a process opens shares
+> the provider's one cache manager. Regions are named after the mapped type, or are one of the two
+> shared query-cache names, and opening reuses a region that already exists - with the TTL it was
+> first created with. Closing destroys every region its mapped types and the query cache name, so with
+> two databases open over overlapping types, closing either empties the other's regions. No caller
+> opens two databases today.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` -
+>   `destroyRegions()` at `:339`, `buildCacheConfiguration(String, Duration)` at `:528`,
+>   `resolveCacheManager()` at `:548`
+> - Type: **RISK**
+> - Status: **OPEN** - per-database region prefixes would separate them
+
+> #### Two drivers name the wrong defaults
+> `SqlServerDriver` renders the `jdbc:microsoft:sqlserver` url of the retired SQL Server 2000 JDBC
+> driver, which the current Microsoft driver does not accept, and `OracleThinDriver` defaults to port
+> 1571 rather than Oracle's 1521. No test names either driver.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/driver/SqlServerDriver.java:46`;
+>   `src/main/java/dev/simplified/persistence/driver/OracleThinDriver.java:16`
+> - Type: **BUG**
+> - Status: **OPEN**
+
+> #### A shut-down session with a cadence stays reachable until the process exits
+> `Scheduler` registers a JVM shutdown hook it never removes, and its `shutdown()` cancels its tasks
+> without dropping them. A session's tick is a task holding the session, so a session that declared a
+> cadence and was shut down stays reachable through the hook until exit. The fix belongs to the
+> scheduler module: clear the task list once the tasks are cancelled.
+>
+> - Affected: `Simplified-Dev/scheduler/src/main/java/dev/simplified/scheduler/Scheduler.java:83`,
+>   `:331-336`
+> - Type: **RISK**
+> - Status: **OPEN** - latent, since no type declares a cadence
 
 > #### A document write to an overridden key is reverted by its own rebuild
 > `DocumentSource.Writable.write` merges every layer, applies the request and rewrites the first layer
@@ -177,11 +241,21 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > design changed in them - `SkyBlockData.connect()` without settings, the bot opening and registering
 > its own database, `JpaExtractorStore` holding a `RelationalSource` - sit uncommitted in that tree.
 >
+> Once it builds, three things stand between it and a working database. Two of its models carry
+> mappings Hibernate refuses when the database opens: `OptimizerSupportItem` keys on a `@ManyToOne` to
+> the corpus's `Item`, which no bot database maps, and `SkyBlockEventTimer` puts `@ManyToOne` on the
+> enum `Season`. `JpaExtractor` sits outside the package the bot's models are discovered from, so the
+> database does not map it and nothing installs `JpaExtractorStore`. And `TestLifecycleListener`
+> connects the corpus over GitHub and registers no bot session, where a test run wants the disk
+> checkout and an in-memory database over the same models `SimplifiedBot` registers.
+>
 > - Affected: `Minecraft-Library/asset-renderer` branch `feat/entity-pose`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/optimizer/modules/common/Solution.java:11`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java`;
 >   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/feature/extractor/JpaExtractorStore.java`
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/feature/extractor/JpaExtractorStore.java`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/OptimizerSupportItem.java:32`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/SkyBlockEventTimer.java:40`, `:49`
 > - Type: **GAP**
 > - Status: **OPEN** - neither cause belongs to this design
 
