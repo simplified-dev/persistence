@@ -4,35 +4,6 @@ Open items on `feat/indexing` after the document/database unification. Each stay
 closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
 ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
-> #### A registered type reads stale after a write that bypasses its session
-> A repository holds one generation of rows and every finder answers from it, so a write that reaches
-> the origin without going through `JpaSession.write(WriteRequest)` leaves the held rows describing
-> the state before it. With `@Hydration` absent - which is the default, meaning no background cadence -
-> they stay that way until something rebuilds the type.
->
-> `JpaSession.write` is the supported path and closes this: it applies the write through the session's
-> `Source.Writable` and then rebuilds the type and every type linking into it. `SessionManager.write`
-> finds the session holding the type and does the same. The caller that opened a database holds the
-> `RelationalSource` itself, and neither its `write` nor its Hibernate access rebuilds anything - `with`,
-> `transaction`, `openSession`, and the one session factory every `Session` hands out. They are the
-> escape hatch precisely because they bypass the library. The same
-> holds for a `DocumentSource.Writable` or a `DocumentOrigin.Writable` a caller built and kept, for
-> anything else that writes the origin directly, and for `JpaConfig.source()`. A caller writing a
-> **registered** type through any of them owns the staleness.
->
-> Two ways to avoid it: write through the session, or leave the type out of `JpaConfig.models()` and
-> reach it only through the database's Hibernate access, which is what registration being the choice
-> means.
->
-> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `write` at
->   `:251`, `openSession` at `:278`, `with` at `:288` and `:305`, `transaction` at `:320` and `:336`;
->   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `Writable.write`;
->   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:67` - `Writable.write`;
->   `src/main/java/dev/simplified/persistence/JpaConfig.java:28` - `source()`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:119` - `getRows()`
-> - Type: **RISK**
-> - Status: **OPEN** - inherent to holding a generation, accepted deliberately
-
 > #### Nothing resolves standalone until collections is published
 > `build.gradle.kts:21` pins `com.github.simplified-dev:collections` at `strictly("9696ca5")`, and
 > that coordinate does not resolve to what this branch needs.
@@ -174,7 +145,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:102` - `isDue()`, `:112` -
 >   `isPastStaleness()`, `:200` - `markStale()`;
 >   `src/main/java/dev/simplified/persistence/HydrationState.java:42` - `STALE`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:527` -
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:524` -
 >   `buildCacheConfiguration(Class)`; `src/main/java/dev/simplified/persistence/Hydration.java`
 > - Type: **GAP**
 > - Status: **OPEN** - keep and test it, or delete it
@@ -196,7 +167,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:307` - `dependentsOf`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:291` - `targetOf`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:241` - `read`
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:247` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
 
@@ -241,12 +212,12 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:98` -
 >   `Writing.write`, javadoc at `:93-95`;
->   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:67` - `Writable.write`, javadoc
->   at `:56-59`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:71` - `Writable.write`, javadoc
+>   at `:57-60`;
 >   `src/main/java/dev/simplified/persistence/source/WriteRequest.java:30` - `precondition`, class
 >   javadoc at `:14-16`;
->   `src/main/java/dev/simplified/persistence/source/Source.java:55` - `Writable.write`, `@throws` at
->   `:52-53`;
+>   `src/main/java/dev/simplified/persistence/source/Source.java:60` - `Writable.write`, `@throws` at
+>   `:57-58`;
 >   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:98` - `read`, `:109` -
 >   `metadata`
 > - Type: **BUG**

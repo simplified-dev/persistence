@@ -2,6 +2,7 @@ package dev.simplified.persistence.source;
 
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
@@ -46,6 +47,10 @@ public interface Source {
          * <p>Granularity is the origin's concern. A document source reads its current layers, applies
          * the request and rewrites the file; a relational source applies the rows one at a time.
          * Neither leaks into the request.
+         *
+         * <p>A write here reaches the origin and nothing else. A session holding the type keeps
+         * serving the rows it read, so a registered type is written through
+         * {@link JpaSession#write(WriteRequest)}, which rebuilds it and every type linking into it.
          *
          * @param request the write to apply
          * @param <T> the entity type

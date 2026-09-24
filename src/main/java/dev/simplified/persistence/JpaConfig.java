@@ -17,7 +17,9 @@ import org.jetbrains.annotations.NotNull;
  *
  * <p>Registration is the whole of the choice a type makes. A type in {@link #models()} holds a
  * generation the session hydrates; a relational type left out of it is still reached through the
- * {@link RelationalSource} the caller opened, provided that database maps it.
+ * {@link RelationalSource} the caller opened, provided that database maps it. A registered type is
+ * written through {@link JpaSession#write}; a write straight through {@link #source()} leaves its
+ * held rows as they were.
  *
  * @param models the model classes the session holds a repository for, typically discovered through
  *        {@link JpaModel#resolveModels(Class)}

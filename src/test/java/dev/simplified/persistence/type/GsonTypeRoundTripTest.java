@@ -637,11 +637,9 @@ class GsonTypeRoundTripTest {
     }
 
     private static @NotNull GsonFixtureModel load(int id) {
-        try (Session scoped = database.openSession()) {
-            GsonFixtureModel row = scoped.find(GsonFixtureModel.class, id);
-            assertNotNull(row, "no row with id " + id);
-            return row;
-        }
+        GsonFixtureModel row = database.with((Session scoped) -> scoped.find(GsonFixtureModel.class, id));
+        assertNotNull(row, "no row with id " + id);
+        return row;
     }
 
     private static void persist(int id, @NotNull Consumer<GsonFixtureModel> populate) {

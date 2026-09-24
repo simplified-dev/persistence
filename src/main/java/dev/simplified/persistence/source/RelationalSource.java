@@ -9,6 +9,7 @@ import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.CacheMissingStrategy;
 import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.type.TypeRegistrar;
@@ -63,7 +64,12 @@ import java.util.function.Function;
  * same way it reads a document.
  *
  * <p>Whoever opens one holds it, for the Hibernate access below and for the session it is handed to.
- * Closing it is optional: a JVM shutdown hook closes a database still open at exit, and
+ * Its Hibernate access - {@link #with}, {@link #transaction} and the session factory a Hibernate
+ * session hands out - reaches no {@link JpaSession}. A registered type written through it serves its
+ * previous rows until its session rebuilds it; it is the way to read and write a type the session
+ * leaves out of its models.
+ *
+ * <p>Closing it is optional: a JVM shutdown hook closes a database still open at exit, and
  * {@link #close()} releases it earlier. Every session reading it is shut down first, because a session
  * reading a closed database fails its next write, rebuild or tick. JVM shutdown hooks run
  * concurrently, so a rebuild or tick still running at exit can fail against a database that is
@@ -271,15 +277,6 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     }
 
     /**
-     * Opens a new Hibernate session, which the caller owns and must close.
-     *
-     * @return a freshly opened session
-     */
-    public @NotNull Session openSession() {
-        return this.sessionFactory.openSession();
-    }
-
-    /**
      * Opens a managed session, passes it to the consumer, and closes it.
      *
      * @param consumer the operation to perform with the session
@@ -287,7 +284,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      */
     public void with(@NotNull Consumer<Session> consumer) {
         try {
-            @Cleanup Session session = this.openSession();
+            @Cleanup Session session = this.sessionFactory.openSession();
             consumer.accept(session);
         } catch (Exception exception) {
             throw new JpaException(exception);
@@ -304,7 +301,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      */
     public <R> R with(@NotNull Function<Session, R> function) {
         try {
-            @Cleanup Session session = this.openSession();
+            @Cleanup Session session = this.sessionFactory.openSession();
             return function.apply(session);
         } catch (Exception exception) {
             throw new JpaException(exception);

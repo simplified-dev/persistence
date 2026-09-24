@@ -1,6 +1,7 @@
 package dev.simplified.persistence.source;
 
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
@@ -57,6 +58,9 @@ public interface DocumentOrigin {
          * last saw it" - a blob sha, a revision, a content hash. Named, it is sent and a moved path
          * refuses the write; absent, the origin resolves its own, which still refuses a write over a
          * path that moved.
+         *
+         * <p>Replacing a file here reaches no session reading this origin. A registered type is
+         * written through {@link JpaSession#write(WriteRequest)}, which rebuilds it.
          *
          * @param path a path this origin published, relative to its root
          * @param content the text to write

@@ -10,6 +10,7 @@ import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.util.Logging;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,14 +26,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * The hydration pass a session runs when it connects: every type reads once, links resolve
- * afterwards, the session is registered only once it has hydrated, and a failing source is not
- * quietly served as an empty one.
+ * afterwards, the session is registered only once it has hydrated, a failing source is not quietly
+ * served as an empty one, and a write that goes around the session leaves the rows it holds as they
+ * were.
  */
 @Tag("slow")
 class JpaSessionHydrationTest {
@@ -75,6 +79,22 @@ class JpaSessionHydrationTest {
             listed.add((Class<JpaModel>) type);
 
         return listed.toUnmodifiable();
+    }
+
+    private static @NotNull TestParentModel parent(int id, @NotNull String name) {
+        TestParentModel parent = new TestParentModel();
+        parent.setId(id);
+        parent.setName(name);
+        return parent;
+    }
+
+    /**
+     * Answers the name of the one parent row a session holds.
+     */
+    private static @NotNull String heldName(@NotNull JpaSession session) {
+        ConcurrentList<TestParentModel> held = session.getRepository(TestParentModel.class).orElseThrow().findAll();
+        assertThat(held, hasSize(1));
+        return held.getFirst().getName();
     }
 
     @Test
@@ -127,6 +147,26 @@ class JpaSessionHydrationTest {
         assertThat(session.getRepository(TestChildModel.class).orElseThrow().getRows().getFirst().getParent().getName(), equalTo("parent1"));
         assertThat(session.getRepository(TestParentModel.class).isEmpty(), is(true));
         this.database.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
+    }
+
+    @Test
+    @DisplayName("a write around the session leaves the held rows as they were, and the same write through it rebuilds them")
+    void aWriteAroundTheSessionLeavesTheHeldRows() {
+        JpaSession session = this.connect("hydration_bypassed");
+        session.write(WriteRequest.upsert(TestParentModel.class, List.of(parent(1, "parent1"))));
+        assertThat(heldName(session), equalTo("parent1"));
+
+        // Renamed through the database's own Hibernate access, the row changes in the database and
+        // nowhere else, so the session holding the type still serves the name it read.
+        this.database.transaction(hibernate -> { hibernate.find(TestParentModel.class, 1).setName("renamed"); });
+        String stored = this.database.with(hibernate -> {
+            return hibernate.find(TestParentModel.class, 1).getName();
+        });
+        assertThat(stored, equalTo("renamed"));
+        assertThat(heldName(session), equalTo("parent1"));
+
+        session.write(WriteRequest.upsert(TestParentModel.class, List.of(parent(1, "renamed"))));
+        assertThat(heldName(session), equalTo("renamed"));
     }
 
     @Test
