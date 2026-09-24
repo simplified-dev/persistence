@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -59,11 +60,10 @@ class JpaCacheTest {
     @Test
     @DisplayName("a repository holds a generation once the session has connected")
     void connectPublishesAGeneration() {
-        JpaRepository<TestParentModel> repository = (JpaRepository<TestParentModel>) this.session.getRepository(TestParentModel.class);
+        Repository<TestParentModel> repository = this.session.getRepository(TestParentModel.class);
 
         assertEquals(HydrationState.CURRENT, repository.getState());
-        assertNotNull(repository.getInitialLoad(), "the first hydration should be timed");
-        assertTrue(repository.getInitialLoad().durationMillis() >= 0);
+        assertTrue(repository.getHydratedAt().isAfter(Instant.EPOCH), "the generation should carry its publication time");
     }
 
     @Test

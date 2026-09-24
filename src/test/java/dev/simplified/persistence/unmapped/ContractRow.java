@@ -6,7 +6,7 @@ import dev.simplified.annotations.Setter;
 import dev.simplified.persistence.JpaModel;
 
 /**
- * A row a factory holds without a database behind it, carrying no mapping.
+ * A row a session holds without a database behind it, carrying no mapping.
  *
  * <p>A repository is registered against a type, not against a table, so the fixture that exercises
  * registration declares no mapping either. It sits apart from the mapped fixtures because a scan

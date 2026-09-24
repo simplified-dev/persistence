@@ -1,19 +1,17 @@
 package dev.simplified.persistence;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
-import dev.simplified.annotations.NamingStyle;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
 import dev.simplified.collection.query.Sortable;
-import dev.simplified.collection.tuple.single.SingleStream;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
-import dev.simplified.util.time.Stopwatch;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -24,52 +22,37 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
- * Default {@link Repository} implementation, holding one generation of rows read from a
- * {@link Source}.
+ * Default {@link Repository} implementation, holding one generation of rows.
  *
  * <p>A read answers from the held generation and performs no I/O, so every finder inherited from
  * {@link Sortable} is a scan or an index probe over rows already in
  * memory. Where those rows came from - a JSON document, a GitHub corpus, a database table - is the
  * source's business and changes nothing here.
  *
- * <p>A generation is built by {@link #hydrate()}, linked by {@link #link()} and published by one
- * reference write, so a reader holding one never sees it change underneath them.
+ * <p>A generation is built in three steps the owning {@link JpaSession} drives:
+ * {@link #hydrate(Source)} reads the rows, {@link #link(ConcurrentList, Function)} resolves their
+ * links, and {@link #hold(ConcurrentList)} publishes them by one reference write. Nothing a reader can
+ * reach changes before the last step, so a reader never sees a row whose links are still empty, and
+ * one holding a generation never sees it change underneath them.
  *
  * @param <T> the entity type, which must implement {@link JpaModel}
  * @see Repository
- * @see Source
  * @see JpaSession
  */
-@Getter
 public class JpaRepository<T extends JpaModel> implements Repository<T> {
-
-    /**
-     * The owning session, whose other repositories a link resolves against.
-     */
-    private final @NotNull JpaSession session;
 
     /**
      * The entity class managed by this repository.
      */
-    private final @NotNull Class<T> type;
-
-    /**
-     * Where this type's rows come from.
-     */
-    private final @NotNull Source source;
-
-    /**
-     * {@code true} if the entity class declares any link to resolve.
-     */
-    @Getter(style = NamingStyle.FLUENT)
-    private final boolean hasLinks;
+    @Getter private final @NotNull Class<T> type;
 
     /**
      * How long to wait between rebuilds, or {@link Duration#ZERO} to hydrate once.
      */
-    private final @NotNull Duration hydrationInterval;
+    @Getter(AccessLevel.PACKAGE) private final @NotNull Duration hydrationInterval;
 
     /**
      * How long a generation may stand before it reports {@link HydrationState#STALE}.
@@ -77,54 +60,32 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private final @NotNull Duration stalenessThreshold;
 
     /**
-     * Whether a session waits for this type's first generation before handing back repositories.
-     */
-    @Getter(style = NamingStyle.FLUENT)
-    private final boolean blocking;
-
-    /**
-     * The rows read by the most recent hydration, before links were resolved.
+     * The rows of the published generation, with every link resolved.
      */
     private volatile @NotNull ConcurrentList<T> rows = Concurrent.newUnmodifiableList();
 
     /**
      * The point this repository's generation has reached.
      */
-    private volatile @NotNull HydrationState state = HydrationState.UNHYDRATED;
+    @Getter private volatile @NotNull HydrationState state = HydrationState.UNHYDRATED;
 
     /**
-     * When the held generation was published.
+     * When the held generation was published, {@link Instant#EPOCH} before the first.
      */
-    private volatile @NotNull Instant hydratedAt = Instant.EPOCH;
+    @Getter private volatile @NotNull Instant hydratedAt = Instant.EPOCH;
 
     /**
-     * Timing snapshot of the first hydration.
-     */
-    private @NotNull Stopwatch initialLoad = Stopwatch.of(Instant.now());
-
-    /**
-     * Timing snapshot of the most recent hydration.
-     */
-    private @NotNull Stopwatch lastRefresh = Stopwatch.of(Instant.now());
-
-    /**
-     * Creates a repository reading from the given source.
+     * Creates a repository for the given type.
      *
      * <p>No I/O runs here. The generation is built when the session's hydrator reaches this type, so
      * a repository exists and answers {@link HydrationState#UNHYDRATED} before it holds anything.
      *
-     * @param session the owning JPA session
      * @param type the entity class
-     * @param source where this type's rows come from
      */
-    JpaRepository(@NotNull JpaSession session, @NotNull Class<T> type, @NotNull Source source) {
-        this.session = session;
+    JpaRepository(@NotNull Class<T> type) {
         this.type = type;
-        this.source = source;
-        this.hasLinks = links(type).notEmpty();
 
         Hydration hydration = type.getAnnotation(Hydration.class);
-        this.blocking = hydration == null || hydration.blocking();
         this.hydrationInterval = hydration == null
             ? Duration.ZERO
             : Duration.of(hydration.every(), hydration.unit().toChronoUnit());
@@ -155,12 +116,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
 
     /** {@inheritDoc} */
     @Override
-    public @NotNull SingleStream<T> stream() throws JpaException {
-        return SingleStream.of(this.getRows().stream());
-    }
-
-    /** {@inheritDoc} */
-    @Override
     public @NotNull ConcurrentList<T> getRows() throws JpaException {
         if (this.state == HydrationState.FAILED)
             throw new JpaException("Hydration failed for '%s' and there is nothing to serve", this.type.getName());
@@ -169,63 +124,74 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Reads this type's rows from its source and holds them, without resolving any link.
+     * Reads this type's rows from the given source without publishing them.
      *
-     * <p>Links are resolved separately by {@link #link()} because a link reaches rows another
-     * repository holds, and every repository has to have read before any of them can be linked.
+     * <p>The rows come back unlinked and the held generation is untouched, so a reader keeps seeing
+     * the previous one until {@link #hold(ConcurrentList)}.
      *
-     * @throws JpaException if the source read fails
+     * @param source where this type's rows are read from
+     * @return the rows read, not yet linked
+     * @throws JpaException if the source read fails, naming this type
      */
-    void hydrate() throws JpaException {
-        Instant startedAt = Instant.now();
-        boolean first = this.state == HydrationState.UNHYDRATED;
-        this.state = first ? HydrationState.HYDRATING : HydrationState.REFRESHING;
+    @NotNull ConcurrentList<T> hydrate(@NotNull Source source) throws JpaException {
+        this.state = this.hydratedAt.equals(Instant.EPOCH) ? HydrationState.HYDRATING : HydrationState.REFRESHING;
 
         try {
-            ConcurrentList<T> read = this.source.read(this.type);
+            ConcurrentList<T> read = source.read(this.type);
             read.forEach(entity -> {
                 if (entity instanceof PostInit postInit)
                     postInit.postInit();
             });
 
-            this.rows = read.toUnmodifiable();
+            return read;
         } catch (Exception exception) {
-            this.state = first ? HydrationState.FAILED : HydrationState.DEGRADED;
-            throw exception instanceof JpaException jpaException
-                ? jpaException
-                : new JpaException(exception, "Failed to hydrate '%s'", this.type.getName());
-        } finally {
-            this.lastRefresh = Stopwatch.of(startedAt);
-
-            if (first)
-                this.initialLoad = this.lastRefresh;
+            throw new JpaException(exception, "Failed to hydrate '%s'", this.type.getName());
         }
     }
 
     /**
-     * Resolves every declared link on the held rows and publishes the generation.
+     * Resolves every declared link on rows that have not been published.
      *
-     * <p>Runs after every repository has hydrated, so a link into another type finds that type's rows
-     * already read. Publication happens here rather than in {@link #hydrate()} because an index built
-     * over rows whose links are still empty describes rows no reader will see.
+     * <p>A link reaches rows another type holds, so the session hands in the lookup: for a target
+     * rebuilt in the same pass it answers that pass's rows, and otherwise the target's published
+     * generation. Each target is asked for once per linking field.
+     *
+     * @param rows the unpublished rows to fill in
+     * @param lookup answers a target type's rows, keyed by their stringified id
      */
-    void link() {
-        if (this.state == HydrationState.FAILED || this.state == HydrationState.DEGRADED)
+    void link(
+        @NotNull ConcurrentList<T> rows,
+        @NotNull Function<Class<? extends JpaModel>, ConcurrentMap<String, ? extends JpaModel>> lookup
+    ) {
+        ConcurrentSet<FieldAccessor<?>> links = links(this.type);
+
+        if (links.isEmpty())
             return;
 
-        if (this.hasLinks()) {
-            Reflection<?> reflection = new Reflection<>(this.type);
+        Reflection<?> reflection = new Reflection<>(this.type);
+        ConcurrentMap<FieldAccessor<?>, ConcurrentMap<String, ? extends JpaModel>> lookups = Concurrent.newMap();
+        links.forEach(field -> lookups.put(field, lookup.apply(targetOf(field))));
 
-            // One lookup per link, built once for the whole generation. Building it per row instead
-            // would re-index the target's whole table for every row of this one.
-            ConcurrentMap<FieldAccessor<?>, ConcurrentMap<String, ? extends JpaModel>> lookups = Concurrent.newMap();
-            links(this.type).forEach(field -> lookups.put(field, this.lookupFor(targetOf(field))));
+        rows.forEach(row -> this.resolveLinks(row, reflection, lookups));
+    }
 
-            this.rows.forEach(row -> this.resolveLinks(row, reflection, lookups));
-        }
-
+    /**
+     * Publishes a generation by one reference write, then marks it current.
+     *
+     * @param replacement the linked rows to hold
+     */
+    void hold(@NotNull ConcurrentList<T> replacement) {
+        this.rows = replacement.toUnmodifiable();
         this.hydratedAt = Instant.now();
         this.state = HydrationState.CURRENT;
+    }
+
+    /**
+     * Records that a rebuild failed, which is {@link HydrationState#FAILED} with nothing published
+     * and {@link HydrationState#DEGRADED} while an earlier generation is still served.
+     */
+    void fail() {
+        this.state = this.hydratedAt.equals(Instant.EPOCH) ? HydrationState.FAILED : HydrationState.DEGRADED;
     }
 
     /**
@@ -234,18 +200,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     void markStale() {
         if (this.state == HydrationState.CURRENT)
             this.state = HydrationState.STALE;
-    }
-
-    /**
-     * Indexes a target type's held rows by their key.
-     *
-     * @param target the type being linked to
-     * @param <M> the target entity type
-     * @return the target's rows keyed by their stringified id
-     */
-    private <M extends JpaModel> @NotNull ConcurrentMap<String, M> lookupFor(@NotNull Class<M> target) {
-        Repository<M> repository = this.session.getRepository(target);
-        return JpaModel.keyed(target, repository.getRows());
     }
 
     /**
@@ -306,7 +260,7 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * @param type the entity class to read
      * @return the linking fields, empty when the type declares none
      */
-    private static @NotNull ConcurrentSet<FieldAccessor<?>> links(@NotNull Class<?> type) {
+    static @NotNull ConcurrentSet<FieldAccessor<?>> links(@NotNull Class<?> type) {
         return new Reflection<>(type).getFields()
             .stream()
             .filter(field -> field.hasAnnotation(Linked.class))
@@ -333,23 +287,12 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * @return the target entity class
      */
     @SuppressWarnings("unchecked")
-    private static @NotNull Class<? extends JpaModel> targetOf(@NotNull FieldAccessor<?> field) {
+    static @NotNull Class<? extends JpaModel> targetOf(@NotNull FieldAccessor<?> field) {
         if (!Collection.class.isAssignableFrom(field.getFieldType()))
             return (Class<? extends JpaModel>) field.getFieldType();
 
         ParameterizedType listType = (ParameterizedType) field.getGenericType();
         return (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
-    }
-
-    /**
-     * Replaces the held generation outright, for a caller that already has the rows.
-     *
-     * @param replacement the rows to hold
-     */
-    void hold(@Nullable ConcurrentList<T> replacement) {
-        this.rows = replacement == null ? Concurrent.newUnmodifiableList() : replacement.toUnmodifiable();
-        this.hydratedAt = Instant.now();
-        this.state = HydrationState.CURRENT;
     }
 
 }
