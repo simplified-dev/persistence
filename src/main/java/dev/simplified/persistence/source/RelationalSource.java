@@ -57,13 +57,14 @@ import java.util.function.Function;
  *
  * <p>Everything Hibernate needs to exist is here and nowhere else - the service registry, the
  * metadata, the session factory and the JCache regions - so a session reading a document source holds
- * none of it. It is a {@link Source.Writable} like any other origin, which is what lets a repository
+ * none of it. It is a {@link Source.Writable} like any other source, which is what lets a repository
  * read a table the same way it reads a document.
  *
  * <p>Whoever opens one holds it: for the Hibernate access below, for the session it is handed to, and
- * to close it once every session reading it is shut down.
+ * to close it once every session reading it is shut down. An open that fails part way releases what it
+ * had acquired before it throws.
  *
- * <p>A relational origin always accepts writes. Refusing one is the database's job, through the
+ * <p>A relational source always accepts writes. Refusing one is the database's job, through the
  * permissions the connection was opened under, rather than this library's.
  *
  * @see JpaDriver
@@ -146,22 +147,35 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         this.applyLogLevel(logLevel);
         this.requireDriverOnClasspath();
 
-        // The query-results and update-timestamps regions are only created when query caching is
-        // actually enabled - a HAZELCAST_* provider disables it unconditionally, so creating these
-        // would leave empty never-used JCache caches sitting on the cluster.
-        if (this.isQueryCacheEnabled()) {
-            this.buildCacheConfiguration(TIMESTAMPS_REGION, Duration.ETERNAL);
-            this.buildCacheConfiguration(
-                QUERY_RESULTS_REGION,
-                this.queryResultsTTL <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, this.queryResultsTTL)
-            );
-        }
+        // Everything acquired from here on is released again when opening fails part way, because
+        // the caller receives no source to close.
+        StandardServiceRegistry registry = null;
 
-        this.serviceRegistry = new StandardServiceRegistryBuilder()
-            .applySettings(this.createProperties(logLevel))
-            .build();
-        this.metadata = this.createMetadata(this.createMetadataSources().getMetadataBuilder(), gson);
-        this.sessionFactory = this.metadata.buildSessionFactory();
+        try {
+            // The query-results and update-timestamps regions are only created when query caching is
+            // actually enabled - a HAZELCAST_* provider disables it unconditionally, so creating these
+            // would leave empty never-used JCache caches sitting on the cluster.
+            if (this.isQueryCacheEnabled()) {
+                this.buildCacheConfiguration(TIMESTAMPS_REGION, Duration.ETERNAL);
+                this.buildCacheConfiguration(
+                    QUERY_RESULTS_REGION,
+                    this.queryResultsTTL <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, this.queryResultsTTL)
+                );
+            }
+
+            registry = new StandardServiceRegistryBuilder()
+                .applySettings(this.createProperties(logLevel))
+                .build();
+            this.serviceRegistry = registry;
+            this.metadata = this.createMetadata(this.createMetadataSources().getMetadataBuilder(), gson);
+            this.sessionFactory = this.metadata.buildSessionFactory();
+        } catch (RuntimeException exception) {
+            if (registry != null)
+                StandardServiceRegistryBuilder.destroy(registry);
+
+            this.destroyRegions();
+            throw exception;
+        }
     }
 
     /**
@@ -305,22 +319,28 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     public void close() {
         this.sessionFactory.close();
         StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
-
-        CacheManager cacheManager = this.resolveCacheManager();
-        this.models.forEach(model -> destroyCache(cacheManager, model.getName()));
-
-        // Match the conditional region creation in the constructor: skip destroy when the region was
-        // never created, which is the Hazelcast path with query caching disabled.
-        destroyCache(cacheManager, TIMESTAMPS_REGION);
-        destroyCache(cacheManager, QUERY_RESULTS_REGION);
+        this.destroyRegions();
     }
 
-    /**
-     * The url and the schema policy, for a message naming what a caller opened.
-     */
+    /** {@inheritDoc} */
     @Override
     public @NotNull String toString() {
         return String.format("%s (%s)", this.url, this.driver.getSchemaPolicy());
+    }
+
+    /**
+     * Destroys the region of every mapped type and both query-cache regions, skipping any that does
+     * not exist - which is the Hazelcast path with query caching disabled.
+     *
+     * <p>A region is named after its type, or is one of the two shared names, in the provider's one
+     * manager, so a region this destroys is also the one any other database mapping the same type
+     * against the same provider is using.
+     */
+    private void destroyRegions() {
+        CacheManager cacheManager = this.resolveCacheManager();
+        this.models.forEach(model -> destroyCache(cacheManager, model.getName()));
+        destroyCache(cacheManager, TIMESTAMPS_REGION);
+        destroyCache(cacheManager, QUERY_RESULTS_REGION);
     }
 
     /**
@@ -374,6 +394,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      * Assembles Hibernate and HikariCP properties from this database's settings.
      *
      * @param logLevel the level the connection logs at
+     * @return the properties the service registry is built from
      */
     private @NotNull ConcurrentMap<String, Object> createProperties(@NotNull Logging.Level logLevel) {
         ConcurrentMap<String, Object> properties = Concurrent.newMap();
@@ -434,6 +455,8 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
      * Registers the mapped entity classes, each with its own cache region.
+     *
+     * @return the metadata sources naming every mapped class
      */
     private @NotNull MetadataSources createMetadataSources() {
         MetadataSources metadataSources = new MetadataSources(this.serviceRegistry);
@@ -480,6 +503,9 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     /**
      * Creates a JCache configuration for one type, with the TTL its {@link Hydration} cadence or the
      * database's default asks for, multiplied as a safety net.
+     *
+     * @param type the mapped type
+     * @return the same type, so the call can sit in a stream of them
      */
     private @NotNull Class<JpaModel> buildCacheConfiguration(@NotNull Class<JpaModel> type) {
         Hydration hydration = type.getAnnotation(Hydration.class);
@@ -495,6 +521,9 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
      * Creates a JCache configuration with the given name and TTL, reusing an existing region.
+     *
+     * @param cacheName the region name
+     * @param duration how long an entry lives after it is written
      */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
         CacheManager cacheManager = this.resolveCacheManager();
