@@ -133,7 +133,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     /**
      * The Hibernate session factory opened from {@link #metadata}.
      */
-    @Getter private final @NotNull SessionFactory sessionFactory;
+    private final @NotNull SessionFactory sessionFactory;
 
     /**
      * JVM shutdown hook that closes this database at exit, removed by {@link #close()}.
@@ -599,6 +599,11 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
         /**
          * Names the account the database is reached with.
+         *
+         * <p>Whoever holds the opened database's Hibernate access can read these back: the service
+         * registry behind its session factory and its boot metadata keeps them, its connection pool
+         * keeps them, and a MariaDB connection answers them. Hand the database only to code trusted
+         * with the account.
          *
          * @param user the account name
          * @param password the account password

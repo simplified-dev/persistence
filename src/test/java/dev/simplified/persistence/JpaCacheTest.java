@@ -81,7 +81,7 @@ class JpaCacheTest {
     void readIssuesNoQuery() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.database.getSessionFactory().getStatistics();
+        Statistics stats = this.statistics();
         assertTrue(stats.isStatisticsEnabled(), "a count of zero means nothing with statistics off");
         stats.clear();
 
@@ -127,7 +127,7 @@ class JpaCacheTest {
     void cacheHitWithinExpiry() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        Statistics stats = this.database.getSessionFactory().getStatistics();
+        Statistics stats = this.statistics();
         stats.clear();
 
         // The hydration the write triggered populated the entity region on its way past, so a per-id
@@ -150,7 +150,7 @@ class JpaCacheTest {
         // 4s JCache TTL, from the 2x multiplier on a 2s default expiry.
         Thread.sleep(5000);
 
-        Statistics stats = this.database.getSessionFactory().getStatistics();
+        Statistics stats = this.statistics();
         stats.clear();
 
         this.database.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
@@ -170,6 +170,17 @@ class JpaCacheTest {
         child.setParent(parent);
         child.setValue(childValue);
         this.session.write(WriteRequest.upsert(TestChildModel.class, List.of(child)));
+    }
+
+    /**
+     * Reads the database's statistics through the session factory a Hibernate session hands out.
+     *
+     * @return the statistics of the database under test
+     */
+    private Statistics statistics() {
+        return this.database.with(hibernate -> {
+            return hibernate.getSessionFactory().getStatistics();
+        });
     }
 
 }

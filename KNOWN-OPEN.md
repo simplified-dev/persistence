@@ -14,8 +14,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `Source.Writable` and then rebuilds the type and every type linking into it. `SessionManager.write`
 > finds the session holding the type and does the same. The caller that opened a database holds the
 > `RelationalSource` itself, and neither its `write` nor its Hibernate access rebuilds anything - `with`,
-> `transaction`, `openSession`, and the one session factory that `getSessionFactory()` and every
-> `Session` hand out. They are the escape hatch precisely because they bypass the library. The same
+> `transaction`, `openSession`, and the one session factory every `Session` hands out. They are the
+> escape hatch precisely because they bypass the library. The same
 > holds for a `DocumentSource.Writable` or a `DocumentOrigin.Writable` a caller built and kept, for
 > anything else that writes the origin directly, and for `JpaConfig.source()`. A caller writing a
 > **registered** type through any of them owns the staleness.
@@ -25,8 +25,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > means.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `write` at
->   `:251`, `openSession` at `:278`, `with` at `:288` and `:305`, `transaction` at `:320` and `:336`,
->   the generated `getSessionFactory()` on the field at `:136`;
+>   `:251`, `openSession` at `:278`, `with` at `:288` and `:305`, `transaction` at `:320` and `:336`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:67` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/JpaConfig.java:28` - `source()`;
@@ -200,24 +199,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:241` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
-
-> #### The connection password is readable from an open database's session factory
-> `RelationalSource` keeps its credentials in a private record and builds its settings map as a
-> constructor local, so neither is reachable through it. Hibernate keeps the settings it was built
-> from, though. `getSessionFactory().getProperties()` masks the username and password as `****`, but
-> the service registry behind the factory does not: reached through `getSessionFactoryOptions()`, or
-> through the boot metadata `getMetadata()` hands out, its `ConfigurationService` answers
-> `hibernate.connection.password` in full, and so does the HikariCP configuration its
-> `ConnectionProvider` unwraps to. Every `Session` the source hands out reaches the same factory
-> through `getSessionFactory()`, and a MariaDB connection answers the password itself, so anyone
-> holding the source or a `JpaConfig` over it can read it.
->
-> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - the generated
->   `getSessionFactory()` on the field at `:136` and `getMetadata()` on the field at `:126`, the
->   sessions `openSession()` at `:278`, `with` at `:288` and `:305` and `transaction` at `:320` and
->   `:336` hand out, and `createProperties` at `:419`
-> - Type: **RISK**
-> - Status: **OPEN** - narrowed, not closed
 
 > #### A shut-down session with a cadence stays reachable until the process exits
 > `Scheduler` registers a JVM shutdown hook it never removes, and its `shutdown()` cancels its tasks

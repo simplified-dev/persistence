@@ -8,6 +8,7 @@ import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.refused.RefusedModel;
 import dev.simplified.util.Logging;
 import org.ehcache.jsr107.EhcacheCachingProvider;
+import org.hibernate.SessionFactory;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.hibernate.cache.jcache.internal.JCacheRegionFactory;
 import org.hibernate.cache.spi.RegionFactory;
@@ -58,8 +59,14 @@ class RelationalSourceTest {
         return Caching.getCachingProvider(EhcacheCachingProvider.class.getName()).getCacheManager();
     }
 
+    private static @NotNull SessionFactory factoryOf(@NotNull RelationalSource database) {
+        return database.with(hibernate -> {
+            return hibernate.getSessionFactory();
+        });
+    }
+
     private static @NotNull CacheManager cacheManagerOf(@NotNull RelationalSource database) {
-        RegionFactory regionFactory = database.getSessionFactory().getCache().unwrap(RegionFactory.class);
+        RegionFactory regionFactory = factoryOf(database).getCache().unwrap(RegionFactory.class);
         return ((JCacheRegionFactory) regionFactory).getCacheManager();
     }
 
@@ -83,14 +90,15 @@ class RelationalSourceTest {
             .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
 
         try {
-            Map<String, Object> properties = database.getSessionFactory().getProperties();
+            SessionFactory factory = factoryOf(database);
+            Map<String, Object> properties = factory.getProperties();
 
             assertThat(String.valueOf(properties.get("hibernate.connection.url")), equalTo("jdbc:h2:mem:" + DATABASE + ";DB_CLOSE_DELAY=-1"));
             assertThat(String.valueOf(properties.get("hibernate.cache.use_query_cache")), equalTo("true"));
             assertThat(String.valueOf(properties.get("hibernate.cache.use_second_level_cache")), equalTo("true"));
             assertThat(String.valueOf(properties.get("hibernate.cache.default_cache_concurrency_strategy")), equalTo("nonstrict-read-write"));
             assertThat(String.valueOf(properties.get("hibernate.javax.cache.missing_cache_strategy")), equalTo("create"));
-            assertTrue(database.getSessionFactory().getStatistics().isStatisticsEnabled(), "statistics were asked for");
+            assertTrue(factory.getStatistics().isStatisticsEnabled(), "statistics were asked for");
 
             assertThat(cacheManagerOf(database), not(sameInstance(defaultCacheManager())));
             assertThat(lifeOf(database, "default-query-results-region"), equalTo(new Duration(TimeUnit.SECONDS, 7)));
@@ -122,7 +130,7 @@ class RelationalSourceTest {
         RelationalSource database = openParents("relational_source_kept", true);
 
         try {
-            Statistics statistics = database.getSessionFactory().getStatistics();
+            Statistics statistics = factoryOf(database).getStatistics();
             database.transaction(hibernate -> { hibernate.persist(parent(1, "parent1")); });
             assertThat(findParent(database, 1), notNullValue());
 
@@ -158,11 +166,12 @@ class RelationalSourceTest {
     @DisplayName("closing a database a second time does nothing further")
     void closingTwiceIsSafe() {
         RelationalSource database = openParents("relational_source_closed_twice", true);
+        SessionFactory factory = factoryOf(database);
 
         database.close();
-        assertTrue(database.getSessionFactory().isClosed(), "the first close closes the session factory");
+        assertTrue(factory.isClosed(), "the first close closes the session factory");
         assertDoesNotThrow(database::close);
-        assertTrue(database.getSessionFactory().isClosed(), "the session factory stays closed");
+        assertTrue(factory.isClosed(), "the session factory stays closed");
     }
 
     @Test
