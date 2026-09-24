@@ -160,6 +160,17 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN** - per-database region prefixes would separate them
 
+> #### The connection password is readable from an open database's session factory
+> `RelationalSource` keeps its credentials in a private record and builds its settings map as a
+> constructor local, so neither is reachable through it. Hibernate keeps the settings it was built
+> from, though, and `getSessionFactory().getProperties()` answers them - `hibernate.connection.password`
+> included - to anyone holding the source or a `JpaConfig` over it.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - the generated
+>   `getSessionFactory()`
+> - Type: **RISK**
+> - Status: **OPEN** - narrowed, not closed
+
 > #### Two drivers name the wrong defaults
 > `SqlServerDriver` renders the `jdbc:microsoft:sqlserver` url of the retired SQL Server 2000 JDBC
 > driver, which the current Microsoft driver does not accept, and `OracleThinDriver` defaults to port
