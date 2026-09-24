@@ -1,26 +1,31 @@
 # Known open
 
 Open items on `feat/indexing` after the document/database unification. Each stays here until it is
-closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/).
+closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
+ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
-> #### A registered relational type reads stale after a raw Hibernate write
+> #### A registered type reads stale after a write that bypasses its session
 > A repository holds one generation of rows and every finder answers from it, so a write that reaches
-> the database without going through `JpaSession.write(WriteRequest)` leaves the held rows describing
+> the origin without going through `JpaSession.write(WriteRequest)` leaves the held rows describing
 > the state before it. With `@Hydration` absent - which is the default, meaning hydrate once - they
-> stay that way for the life of the session.
+> stay that way until something rebuilds the type.
 >
-> `JpaSession.write` is the supported path and closes this: it applies the write through the type's
-> `Source.Writable` and then rebuilds that type. `SessionManager.write` finds the session holding the
-> type and does the same. `JpaSession.with(...)`, `JpaSession.transaction(...)` and
-> `JpaSession.openSession()` do not, and are the escape hatch precisely because they bypass the
-> library - so a caller using them against a **registered** type owns the staleness.
+> `JpaSession.write` is the supported path and closes this: it applies the write through the session's
+> `Source.Writable` and then rebuilds the type and every type linking into it. `SessionManager.write`
+> finds the session holding the type and does the same. The caller that opened a database holds the
+> `RelationalSource` itself, and its `with`, `transaction`, `openSession` and `write` do not rebuild -
+> they are the escape hatch precisely because they bypass the library. The same holds for a
+> `DocumentSource.Writable` a caller built and kept, and for `JpaConfig.source()`. A caller writing a
+> **registered** type through any of them owns the staleness.
 >
-> Two ways to avoid it, both available today: write through `JpaSession.write`, or do not register the
-> type at all and reach it only through the session, which is what registration being the choice means.
+> Two ways to avoid it: write through the session, or leave the type out of `JpaConfig.models()` and
+> reach it only through the database's Hibernate access, which is what registration being the choice
+> means.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java` - `write(WriteRequest)`,
->   `with(Consumer)`, `with(Function)`, `transaction(Consumer)`, `transaction(Function)`,
->   `openSession()`; `src/main/java/dev/simplified/persistence/JpaRepository.java` - `getRows()`
+> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `write` at
+>   `:206`, `openSession` at `:233`, `with` at `:243` and `:260`, `transaction` at `:275` and `:291`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133`;
+>   `src/main/java/dev/simplified/persistence/JpaRepository.java:119`
 > - Type: **RISK**
 > - Status: **OPEN** - inherent to holding a generation, accepted deliberately
 
@@ -58,115 +63,133 @@ closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa
 
 > #### A single-valued link that resolves to nothing is set to null in silence
 > `@Linked` on a non-collection field resolves the id its argument names against the target type's
-> held rows. When the id names no row, the field is set to `null` - including where the field is
-> declared `@NotNull`, as `Item.category` is, and `Item.equals` reads it. Hibernate's
-> `optional = false` used to answer this by refusing the load; nothing answers it now.
+> rows. When the id names no row, the field is set to `null` - including where the field is declared
+> `@NotNull`, as `Item.category` is, and `Item.equals` reads it. Hibernate's `optional = false` used to
+> answer this by refusing the load; nothing answers it now.
 >
 > The corpus does not currently exercise it: every single-valued link resolves across all 34
 > documents, which is what makes it a latent hazard rather than a live defect. `02-flow.md` §5.4 says
 > the type should fail; the spine reserved the decision and it is still reserved.
 >
-> - Affected: `Simplified-Dev/persistence/src/main/java/dev/simplified/persistence/JpaRepository.java`
->   - `resolveLinks`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:213` - `resolveLinks`
 > - Type: **RISK**
 > - Status: **OPEN** - the policy is undecided, per spine §12
 
-> #### `JpaRepository` still answers `getInitialLoad()` and `getLastRefresh()`
-> `01-contracts.md` §2 puts neither on a repository: cadence is the hydrator's concern, and what a
-> reader needs - whether the type is usable and how old it is - is `getState()` plus
-> `getHydratedAt()`. The prior pack settled the same deletion for `getInitialLoad()` (O17 in
-> `notes/query-redesign/34-decisions-settled.md`). `Repository` matches the contract; `JpaRepository`
-> does not, because its class-level `@Getter` generates a public accessor for every field, the
-> `initialLoad` and `lastRefresh` timers included. Both are reachable through the concrete type, and
-> `JpaCacheTest` and `JpaCacheHazelcastTest` assert on `getInitialLoad()`.
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java` - class `@Getter` at `:45`,
->   `initialLoad` at `:103`, `lastRefresh` at `:108`;
->   `src/test/java/dev/simplified/persistence/JpaCacheTest.java:55-56`;
->   `src/test/java/dev/simplified/persistence/JpaCacheHazelcastTest.java:97-98`
-> - Type: **GAP**
-> - Status: **OPEN** - settled by both design packs, not yet applied
-
-> #### `@Hydration(blocking = false)` changes nothing, and a reader never blocks
+> #### `@Hydration(blocking = false)` changes nothing
 > `01-contracts.md` §6 gives `blocking()` one job - whether `SessionManager.connect(...)` waits for a
 > type's first generation before returning - and gives a reader a fixed contract: block on
-> `UNHYDRATED` and `HYDRATING`, throw on `FAILED`, return on everything else. Only the `FAILED` throw
-> is built. `JpaRepository` reads the annotation into `blocking` and nothing reads the field, because
-> `JpaSession.cacheRepositories()` hydrates every registered type on the calling thread before it
-> returns, so there is no startup for a non-blocking type to skip. The prior pack's O2 - first
-> hydration off the calling thread - is the same unbuilt piece.
+> `UNHYDRATED` and `HYDRATING`, throw on `FAILED`, return on everything else.
 >
-> `getRows()` returns what it holds in every state but `FAILED`, so a repository that has not read
-> answers an empty list, and one that has read but not linked answers rows whose `@Linked` fields are
-> still empty. Both are reachable today, because `SessionManager.connect` registers the session before
-> `cacheRepositories()` runs:
+> `connect` now hydrates every registered type before it registers the session, so no lookup through
+> a `SessionManager` ever reaches a repository in `UNHYDRATED` or `HYDRATING`, and a rebuild publishes
+> nothing until its links resolve. That makes every type behave as `blocking = true`. The element is
+> still declared and still read by nothing, so `blocking = false` - a type whose readers would rather
+> wait on first access than hold up the connect - is unbuilt, as is the prior pack's O2, first
+> hydration off the calling thread.
 >
-> - a thread calling `SessionManager.getRepository` while another is connecting gets a repository
->   that has not finished hydrating
-> - when a first hydration throws, the session stays registered: the failing type answers `FAILED`,
->   the types the loop had not reached stay `UNHYDRATED` and answer empty, and the types it had
->   reached stay `HYDRATING` with their links unresolved
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java` - `blocking` at `:83`,
->   read at `:127`, `getRows()` at `:164-169`;
->   `src/main/java/dev/simplified/persistence/JpaSession.java` - `cacheRepositories()` at `:171-198`,
->   `hydrate(Iterable)` at `:232-243`;
->   `src/main/java/dev/simplified/persistence/SessionManager.java` - `connect(JpaConfig)` at `:44-52`
+> - Affected: `src/main/java/dev/simplified/persistence/Hydration.java:56`;
+>   `src/main/java/dev/simplified/persistence/JpaSession.java:102` - `cacheRepositories()`
 > - Type: **GAP**
-> - Status: **OPEN** - the startup wait and the reader contract are both unbuilt
+> - Status: **OPEN** - the non-blocking startup is unbuilt
 
-> #### A failed `connect` leaves its session registered
-> `SessionManager.connect` adds the session to `sessions` before calling `cacheRepositories()`, and
-> nothing removes it when that call throws. The exception reaches the caller, but the session stays in
-> the registry: `getRepository` and `write` still reach its half-hydrated repositories, no refresh tick
-> was ever scheduled to repair them, and nothing shuts down its scheduler or closes its database.
-> `isRegistered` still matches its config, so a second `connect` with the same config is refused as
-> already active; recovering takes an explicit `shutdown(config)` first.
+> #### A write that lands can still throw, and the queue re-applies it
+> A write rebuilds the written type and every type linking into it, after the origin has accepted the
+> write. A write to `Item` re-reads six documents, one to `Region` eight. If any of them fails to read,
+> `JpaSession.write` throws even though the write itself landed, and the whole rebuild publishes
+> nothing, so the written type keeps its pre-write generation too. `WriteQueueConsumer` treats the
+> throw as a failed write, reschedules it and re-applies it - one more commit per retry - until the
+> retry cap dead-letters it.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/SessionManager.java` - `connect(JpaConfig)` at
->   `:44-52`; `src/main/java/dev/simplified/persistence/JpaSession.java` - `cacheRepositories()` at
->   `:171-198`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:224` - `write(WriteRequest)`;
+>   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:208-211`
+> - Type: **RISK**
+> - Status: **OPEN** - the write and its rebuild report through one exception
+
+> #### The caller owns closing a database, including after a failed connect
+> A session never opens or closes its source. `SessionManager.connect` shuts down a session whose first
+> hydration throws, but the database the caller opened for it stays open - its pool, its service
+> registry and its cache regions - until the caller closes it. The caller also owns the order: closing
+> the database before shutting the session down lets a due tick or a write reach a closed session
+> factory, and a database shared by two sessions has to outlive both.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/SessionManager.java:46` - `connect(JpaConfig)`;
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:305` - `close()`
+> - Type: **RISK**
+> - Status: **OPEN** - documented on `connect` and `open`; nothing enforces it
+
+> #### A document write to an overridden key is reverted by its own rebuild
+> `DocumentSource.Writable.write` merges every layer, applies the request and rewrites the first layer
+> with the whole merged set; the later layers are untouched. The rebuild that follows merges again and
+> the later layer wins, so an upsert of a key an override layer carries is reverted, and a delete of
+> one reappears. The copy into the first layer is pinned as intended by
+> `DocumentLayerMergeTest.writeCarriesTheWholeDocument`; the revert is not tested.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `write`
 > - Type: **BUG**
-> - Status: **OPEN** - found tracing the entry above, not yet fixed
+> - Status: **OPEN**
+
+> #### A document write can overwrite a concurrent commit
+> No production write names a precondition, so `CorpusOrigin.Writing` asks GitHub for the file's
+> current blob sha at the moment it writes - after the merge read. A commit landing between the two
+> reads is overwritten with a merge of the older content, where `DocumentOrigin.Writable`'s javadoc
+> says a moved path refuses the write.
+>
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:98`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:56-59`
+> - Type: **BUG**
+> - Status: **OPEN**
+
+> #### A consumer can still force a full SkyBlock rehydration
+> An empty write no longer rebuilds anything and `SessionManager.reconnect` is gone, but
+> `SkyBlockData.getSessionManager()` is public, so `shutdown()` followed by `SkyBlockData.connect()`
+> re-reads every type - which D7 and invariant 5 say no downstream consumer can do.
+>
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:44`,
+>   `:87`
+> - Type: **RISK**
+> - Status: **OPEN**
+
+> #### A moved document has no route into a session
+> The writer's poller computes which corpus documents moved and discards the answer, and the poll
+> swaps the catalogue the writer's `CorpusOrigin` reads. A session learns of a moved document only by
+> writing it or by a `@Hydration` tick, and no corpus type declares one. The rebuild rule says what to
+> rebuild once a moved type is known - that type and every type linking into it - but not how the
+> session is told: a fourth `DocumentOrigin` question the session asks, a fingerprint entry the
+> deployment calls, which invariant 5 requires to rebuild nothing when repeated, or not at all.
+>
+> - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/poller/CorpusPoller.java` -
+>   `scheduled()` at `:66-76` discards what `poll()` at `:83-106` returns;
+>   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java`
+> - Type: **GAP**
+> - Status: **OPEN** - the route is undecided
 
 > #### `bot` does not build, for two reasons that predate this work
-> `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so the three write sites migrated on
-> this branch are unverified beyond review.
+> `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so its write sites and its
+> relational session are unverified beyond review.
 >
 > `Minecraft-Library/asset-renderer` is on `feat/entity-pose` with an uncommitted tree and a missing
 > `lib.minecraft.renderer.client` package, producing 19 compile errors in a module `bot` depends on
 > transitively. Separately, `bot`'s own `Solution.java` imports `BonusReforgeStat`, for which no file
 > exists. Neither is reachable from this design.
 >
-> `bot` also carries 70 uncommitted files from an unrelated in-progress pass, so `daa4582` commits the
-> two this branch had to touch and nothing else.
+> `bot` also carries an uncommitted tree from an unrelated in-progress pass. `SimplifiedBot`,
+> `TestLifecycleListener` and the untracked `JpaExtractorStore` are part of it, so the lines this
+> design changed in them - `SkyBlockData.connect()` without settings, the bot opening and registering
+> its own database, `JpaExtractorStore` holding a `RelationalSource` - sit uncommitted in that tree.
 >
 > - Affected: `Minecraft-Library/asset-renderer` branch `feat/entity-pose`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/optimizer/modules/common/Solution.java:11`
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/optimizer/modules/common/Solution.java:11`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java`;
+>   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/feature/extractor/JpaExtractorStore.java`
 > - Type: **GAP**
 > - Status: **OPEN** - neither cause belongs to this design
 
-> #### The bot's relational session registers no types
-> `JpaConfig.commonSql()` supplies no repository factory, so `build()` falls through to
-> `RepositoryFactory.of(JpaModel.class)`, whose scan is anchored in `dev.simplified.persistence` - a
-> package that now holds no models at all. A session built from it holds zero repositories, so
-> `SkyBlockData.write` against `AppUser` or `AppGuildReputation` would find no session holding the type.
->
-> `commonSql()` itself is repaired on this branch: it reads `DATABASE_HOST`, `DATABASE_PORT`,
-> `DATABASE_SCHEMA`, `DATABASE_USER` and `DATABASE_PASSWORD`, where before it passed the host variable
-> as the schema and set no host, and threw before it could build under any environment. What is left
-> is the registration, which under D12 is the whole choice and belongs to the caller: `SimplifiedBot`
-> has to name the anchor its models sit under.
->
-> - Affected: `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:49`
-> - Type: **GAP**
-> - Status: **OPEN** - out of this pass's scope, and `bot` does not build to verify it
-
 > #### Nothing has measured the second-level cache against the in-memory index
-> D12 says registration is the choice: a type in `getModels()` holds a generation, and a relational
-> type outside it is reached through the session's Hibernate access. Which relational types belong in
-> the list is a measurement, and the harness does not exist - no JMH block, no JOL, no heap-dump step.
-> `06-risks-and-measurement.md` §1 specifies what to build.
+> D12 says registration is the choice: a type in `JpaConfig.models()` holds a generation, and a
+> relational type left out of it is reached through the Hibernate access of the database that maps
+> it. Which relational types belong in the list is a measurement, and the harness does not exist - no
+> JMH block, no JOL, no heap-dump step. `06-risks-and-measurement.md` §1 specifies what to build.
 >
 > The corpus memory budget is the same shape of question: 7,593 rows over 237 mapped columns from
 > 8.69 MB of JSON, held live in every consuming JVM. `06` §2 estimates roughly 40 MB with its method

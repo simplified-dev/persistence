@@ -20,8 +20,9 @@ import java.util.concurrent.TimeUnit;
  * public class Item implements JpaModel { }
  * }</pre>
  *
- * <p>Only the hydrator acts on this. Nothing downstream can force a rebuild, so a consumer that wants
- * fresher rows declares a shorter cadence rather than reaching for a refresh method.
+ * <p>Only the {@link JpaSession} registering the type acts on this. Nothing downstream can force a
+ * rebuild, so a consumer that wants fresher rows declares a shorter cadence rather than reaching for a
+ * refresh method.
  *
  * @see HydrationState
  */

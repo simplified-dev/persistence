@@ -1,6 +1,6 @@
 # Persistence
 
-JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides read-only cached repositories, session management, per-entity TTL annotations, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
+JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides repositories that hold each model's rows in memory, session management, per-type hydration cadences, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
 
 > [!IMPORTANT]
 > This library is under active development. APIs may change between releases until a stable `1.0.0` is published.
@@ -22,16 +22,16 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), cust
 
 ## Features
 
-- **Repository pattern** - Read-only cached `Repository` interface with `JpaRepository` implementation for CRUD operations, cache eviction, and stream-based querying
-- **Session management** - `SessionManager` registry for multiple concurrent `JpaSession` instances with cross-session repository lookup, reconnection, and coordinated shutdown
-- **L2 caching** - EhCache- or Hazelcast-backed second-level cache with per-entity TTL via `@CacheExpiry` annotation and configurable cache concurrency strategies
+- **Repository pattern** - `Repository` holds one generation of a model's rows in memory; every `Sortable` finder answers from it without I/O, and a property declaring `@Indexed` is answered by a hash probe
+- **Sessions** - `JpaSession` hydrates every type a `JpaConfig` registers from its one `Source`, resolves links before it publishes a generation, and rebuilds a written type together with every type that links into it
+- **Session management** - `SessionManager` registers a session once it has hydrated, looks repositories up and routes writes across every session it holds, and shuts them down together
+- **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none hydrates once
+- **Links** - `@Linked` fills a field with the row, or rows, its id property names, and keeps that field out of serialization
+- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
+- **L2 caching** - EhCache- or Hazelcast-backed second-level cache for an open database, with a per-type TTL taken from `@Hydration` and configurable cache concurrency strategies
 - **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
 - **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`
-- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
-- **Repository factory** - `RepositoryFactory` names the models a session holds and the `Source` each reads from, with classpath-scoped model discovery
-- **Foreign ID resolution** - `@ForeignIds` transient field population for cross-entity relationships loaded from non-relational sources
-- **External asset tracking** - `ExternalAssetState` and `ExternalAssetEntryState` record per-source and per-entry content hashes so a poller can tell what actually changed
 
 ## Getting Started
 
@@ -84,17 +84,18 @@ dependencies {
 
 ## Usage
 
-Define a JPA entity model:
+Define a model:
 
 ```java
-import dev.simplified.persistence.CacheExpiry;
+import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.*;
 
 import java.util.concurrent.TimeUnit;
 
 @Entity
-@CacheExpiry(value = 5, length = TimeUnit.MINUTES)
+@Table(name = "users")
+@Hydration(every = 5, unit = TimeUnit.MINUTES)
 public class User implements JpaModel {
 
     @Id
@@ -103,31 +104,58 @@ public class User implements JpaModel {
 }
 ```
 
-Configure and connect a session:
+Open a database and connect a session over it. The caller opens the database, hands it to the session as the source every registered type is read from, and closes it once the session is shut down:
 
 ```java
 import dev.simplified.persistence.JpaConfig;
+import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.SessionManager;
 import dev.simplified.persistence.driver.MariaDbDriver;
+import dev.simplified.persistence.source.RelationalSource;
 
-JpaConfig config = JpaConfig.common(new MariaDbDriver(), "mydb")
-    .withHost("localhost")
-    .withPort(3306)
-    .withUser("root")
-    .withPassword("secret")
-    .build();
+ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(User.class);
+RelationalSource database = MariaDbDriver.at("localhost", "mydb")
+    .as("root", "secret")
+    .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
 SessionManager sessionManager = new SessionManager();
-sessionManager.connect(config);
+sessionManager.connect(new JpaConfig(models, database));
 ```
 
-Query cached data through the repository:
+The list `open` maps and the list a `JpaConfig` registers are separate: a type registered with the session holds a generation in memory, while a mapped type left out of it is reached through the database's own Hibernate access.
+
+Query the held rows, and write through the session so the generation follows the write:
 
 ```java
 import dev.simplified.persistence.Repository;
+import dev.simplified.persistence.source.WriteRequest;
 
-Repository<User> userRepo = sessionManager.getRepository(User.class);
-ConcurrentList<User> users = userRepo.findAll();
+Repository<User> users = sessionManager.getRepository(User.class);
+ConcurrentList<User> all = users.findAll();
+
+sessionManager.write(WriteRequest.upsert(User.class, List.of(user)));
+```
+
+Reach Hibernate through the database, and shut down in order:
+
+```java
+database.transaction(session -> {
+    session.persist(archived);
+});
+
+sessionManager.shutdown();
+database.close();
+```
+
+A write that goes straight to Hibernate like this bypasses the session, so a type the session registers keeps the rows it held until its next rebuild; write a registered type through the session instead.
+
+A session over layered JSON documents opens nothing and closes nothing - the source is built and handed in:
+
+```java
+sessionManager.connect(new JpaConfig(
+    JpaModel.resolveModels(Item.class),
+    new DocumentSource(origin, GsonSettings.defaults().create())
+));
 ```
 
 ## Supported Drivers
@@ -151,11 +179,11 @@ ConcurrentList<User> users = userRepo.findAll();
 
 | Package | Description |
 |---------|-------------|
-| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `RepositoryFactory`, `JpaConfig`, `JpaModel`, `@Hydration`, `@Linked`) |
+| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `JpaConfig`, `JpaModel`, `@Hydration`, `@Linked`) |
 | `dev.simplified.persistence.converter` | JPA attribute converters (`UUIDConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
-| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `RelationalSource`, `DocumentOrigin`, `RelationalOrigin`, `WriteRequest`) |
+| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `RelationalSource`, `DocumentOrigin`, `WriteRequest`) |
 | `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonValueType`, `GsonType`) with type and converter registrars |
 
 ### Project Structure
@@ -176,7 +204,6 @@ persistence/
 │   │   ├── JpaSession.java
 │   │   ├── Linked.java
 │   │   ├── Repository.java
-│   │   ├── RepositoryFactory.java
 │   │   ├── SessionManager.java
 │   │   ├── converter/
 │   │   │   └── UUIDConverter.java
@@ -194,7 +221,6 @@ persistence/
 │   │   ├── source/
 │   │   │   ├── DocumentOrigin.java
 │   │   │   ├── DocumentSource.java
-│   │   │   ├── RelationalOrigin.java
 │   │   │   ├── RelationalSource.java
 │   │   │   ├── Source.java
 │   │   │   └── WriteRequest.java
