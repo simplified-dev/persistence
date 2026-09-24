@@ -71,7 +71,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > last until another commit repairs the data.
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
->   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:125` -
+>   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:130` -
 >   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
 > - Type: **RISK**
@@ -88,8 +88,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > does not refuse a type an active session already registers, so the second call re-reads every type
 > into a session behind the first, which every lookup and write still reaches first.
 >
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:52` -
->   `sessionManager` and its generated getter, `:105` - `connect()`;
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:59` -
+>   `sessionManager` and its generated getter, `:113` - `connect()`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:48` - `main`;
 >   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java:19` -
 >   `testPlanExecutionStarted`, `:26` - `testPlanExecutionFinished`;
@@ -142,24 +142,3 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/SkyBlockEventTimer.java:42`, `:51`
 > - Type: **GAP**
 > - Status: **OPEN** - no cause belongs to this design
-
-> #### Nothing has measured the second-level cache against the in-memory index
-> D12 says registration is the choice: a type in `JpaConfig.models()` holds a generation, and a
-> relational type left out of it is reached through the Hibernate access of the database that maps
-> it. Which relational types belong in the list is a measurement, and the harness does not exist - no
-> JMH block, no JOL, no heap-dump step. `06-risks-and-measurement.md` §1 specifies what to build,
-> though its fixture recipe names the API before the unification - `JpaConfig.common(...)`, a
-> `SessionFactory` on the session - where a database is now opened through its driver and holds its
-> own. The in-memory side indexes nothing yet either: no model in the workspace declares `@Indexed`,
-> so every finder scans, although `SkyBlockData.getRepository`'s javadoc promises a hash probe. The one
-> relational consumer, `bot`, registers all 23 of its tables in its uncommitted tree, and does not
-> build.
->
-> The corpus memory budget is the same shape of question: 7,593 rows over 237 mapped columns from
-> 8.69 MB of JSON, held live in every consuming JVM. `06` §2 estimates roughly 40 MB with its method
-> shown, and D2 rests on that being affordable.
->
-> - Affected: the design as a whole; `build.gradle.kts:1-3` and `gradle/libs.versions.toml`, which
->   declare no benchmark source set
-> - Type: **GAP**
-> - Status: **OPEN** - deliberately, and out of scope for this pass
