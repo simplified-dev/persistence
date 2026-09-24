@@ -17,6 +17,7 @@ import dev.simplified.util.Logging;
 import jakarta.persistence.criteria.CriteriaQuery;
 import org.ehcache.core.Ehcache;
 import org.ehcache.jsr107.EhcacheCachingProvider;
+import org.hibernate.Hibernate;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.StatelessSession;
@@ -240,7 +241,15 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         return this.with(hibernate -> {
             CriteriaQuery<T> query = hibernate.getCriteriaBuilder().createQuery(type);
             query.select(query.from(type));
-            return Concurrent.newUnmodifiableList(hibernate.createQuery(query).getResultList());
+
+            // A row the session already holds a proxy for - one a lazy association read earlier in
+            // the same query named - comes back as that proxy, whose own fields are empty. The query
+            // has initialized it, so reaching the entity behind it loads nothing.
+            return hibernate.createQuery(query)
+                .getResultList()
+                .stream()
+                .map(row -> Hibernate.unproxy(row, type))
+                .collect(Concurrent.toUnmodifiableList());
         });
     }
 

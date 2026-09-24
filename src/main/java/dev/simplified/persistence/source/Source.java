@@ -29,6 +29,9 @@ public interface Source {
     /**
      * Reads every row the origin holds for the given type.
      *
+     * <p>Each row is the entity itself, never a proxy standing in for one, because a session reads a
+     * row's id and fills its links through its fields, and a proxy's own fields are empty.
+     *
      * @param type the entity class to read
      * @param <T> the entity type
      * @return the rows, empty when the origin holds none

@@ -1,17 +1,22 @@
 package dev.simplified.persistence.source;
 
+import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.CacheMissingStrategy;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestParentModel;
+import dev.simplified.persistence.proxied.ProxiedRow;
 import dev.simplified.persistence.refused.RefusedModel;
 import dev.simplified.util.Logging;
+import jakarta.persistence.criteria.CriteriaQuery;
 import org.ehcache.jsr107.EhcacheCachingProvider;
 import org.hibernate.SessionFactory;
 import org.hibernate.annotations.CacheConcurrencyStrategy;
 import org.hibernate.cache.jcache.internal.JCacheRegionFactory;
 import org.hibernate.cache.spi.RegionFactory;
+import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.stat.Statistics;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -33,9 +38,11 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
@@ -46,9 +53,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * An opened database: the settings its builder carries reaching Hibernate, what a failed open leaves
- * behind, a close that leaves every other open database caching, the shutdown hook that holds an open
- * one, and a close that can be repeated and leaves nothing the JVM holds.
+ * An opened database: the settings its builder carries reaching Hibernate, the rows a read hands
+ * back, what a failed open leaves behind, a close that leaves every other open database caching, the
+ * shutdown hook that holds an open one, and a close that can be repeated and leaves nothing the JVM
+ * holds.
  */
 @Tag("slow")
 class RelationalSourceTest {
@@ -105,6 +113,48 @@ class RelationalSourceTest {
             assertThat(lifeOf(database, TestParentModel.class.getName()), equalTo(new Duration(TimeUnit.MILLISECONDS, 5_000)));
 
             assertThat(database.toString(), equalTo("jdbc:h2:mem:" + DATABASE + ";DB_CLOSE_DELAY=-1 (create-drop)"));
+        } finally {
+            database.close();
+        }
+    }
+
+    @Test
+    @DisplayName("a row the query answers as a proxy is read as the entity itself")
+    void aProxiedRowIsReadAsTheEntity() {
+        RelationalSource database = openProxied("relational_source_proxied");
+
+        try {
+            // The query run bare answers the row it reaches second as the proxy the first row's lazy
+            // parent put in the session, which is what makes this fixture reach a proxy at all.
+            boolean answersAProxy = database.with(hibernate -> {
+                CriteriaQuery<ProxiedRow> query = hibernate.getCriteriaBuilder().createQuery(ProxiedRow.class);
+                query.select(query.from(ProxiedRow.class));
+                return hibernate.createQuery(query).getResultList().stream().anyMatch(HibernateProxy.class::isInstance);
+            });
+            assertTrue(answersAProxy, "The bare query answers no row as a proxy");
+
+            ConcurrentList<ProxiedRow> rows = database.read(ProxiedRow.class);
+            assertThat(rows, hasSize(2));
+
+            for (ProxiedRow row : rows) {
+                assertThat(row, not(instanceOf(HibernateProxy.class)));
+                assertThat(row.getClass(), equalTo(ProxiedRow.class));
+            }
+        } finally {
+            database.close();
+        }
+    }
+
+    @Test
+    @DisplayName("a row the query answers as a proxy is keyed by its own id")
+    void aProxiedRowIsKeyedByItsId() {
+        RelationalSource database = openProxied("relational_source_proxied_keyed");
+
+        try {
+            ConcurrentMap<String, ProxiedRow> keyed = JpaModel.keyed(ProxiedRow.class, database.read(ProxiedRow.class));
+
+            assertThat(keyed.keySet(), containsInAnyOrder("1", "2"));
+            keyed.forEach((id, row) -> assertThat(String.valueOf(row.getId()), equalTo(id)));
         } finally {
             database.close();
         }
@@ -254,6 +304,36 @@ class RelationalSourceTest {
             .isUsingQueryCache(caching)
             .isUsing2ndLevelCache(caching)
             .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+    }
+
+    /**
+     * Opens a database mapping only {@link ProxiedRow}, holding two rows that are each the other's
+     * parent.
+     *
+     * <p>Whichever row a read reaches first, its lazy parent puts a proxy for the other row in the
+     * session before that row is read, so the query answers the other row as that proxy - in either
+     * order the database hands them back in.
+     *
+     * @param name the in-memory database's name
+     * @return the open database
+     */
+    private static @NotNull RelationalSource openProxied(@NotNull String name) {
+        RelationalSource database = H2MemoryDriver.named(name)
+            .open(JpaModel.resolveModels(ProxiedRow.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+
+        database.transaction(hibernate -> {
+            ProxiedRow first = new ProxiedRow();
+            first.setId(1L);
+            ProxiedRow second = new ProxiedRow();
+            second.setId(2L);
+            hibernate.persist(first);
+            hibernate.persist(second);
+            hibernate.flush();
+            first.setParent(second);
+            second.setParent(first);
+        });
+
+        return database;
     }
 
     private static @NotNull TestParentModel parent(int id, @NotNull String name) {
