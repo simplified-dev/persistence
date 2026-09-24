@@ -24,6 +24,9 @@ import javax.cache.Caching;
 import javax.cache.configuration.CompleteConfiguration;
 import javax.cache.expiry.Duration;
 import javax.cache.expiry.ExpiryPolicy;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -36,12 +39,15 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * An opened database: the settings its builder carries reaching Hibernate, what a failed open leaves
- * behind, and a close that leaves every other open database caching.
+ * behind, a close that leaves every other open database caching, and a close that can be repeated and
+ * leaves nothing the JVM holds.
  */
 @Tag("slow")
 class RelationalSourceTest {
@@ -146,6 +152,46 @@ class RelationalSourceTest {
         } finally {
             database.close();
         }
+    }
+
+    @Test
+    @DisplayName("closing a database a second time does nothing further")
+    void closingTwiceIsSafe() {
+        RelationalSource database = openParents("relational_source_closed_twice", true);
+
+        database.close();
+        assertTrue(database.getSessionFactory().isClosed(), "the first close closes the session factory");
+        assertDoesNotThrow(database::close);
+        assertTrue(database.getSessionFactory().isClosed(), "the session factory stays closed");
+    }
+
+    @Test
+    @DisplayName("a closed database is no longer reachable through its shutdown hook")
+    void aClosedDatabaseIsCollected() throws InterruptedException {
+        ReferenceQueue<RelationalSource> queue = new ReferenceQueue<>();
+        WeakReference<RelationalSource> reference = closedDetached(queue);
+        Reference<? extends RelationalSource> collected = null;
+
+        // At most 50 collections, each followed by a 100ms wait for the reference to enqueue
+        for (int attempt = 0; attempt < 50 && collected == null; attempt++) {
+            System.gc();
+            collected = queue.remove(100);
+        }
+
+        assertSame(reference, collected, "A closed database is still reachable");
+    }
+
+    /**
+     * Opens a database and closes it, handing back only a weak reference so no strong one outlives
+     * this frame.
+     *
+     * @param queue the queue the reference enqueues on once the database is collected
+     * @return a weak reference to the closed database
+     */
+    private static @NotNull WeakReference<RelationalSource> closedDetached(@NotNull ReferenceQueue<RelationalSource> queue) {
+        RelationalSource database = openParents("relational_source_collected", true);
+        database.close();
+        return new WeakReference<>(database, queue);
     }
 
     private static @NotNull RelationalSource openParents(@NotNull String name, boolean caching) {

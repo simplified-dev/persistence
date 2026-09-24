@@ -36,9 +36,10 @@ import java.util.stream.Stream;
  * an association holds a copy read with its owner that carries the target's current row. Publication
  * is per type, so a reader between two types' publication sees one new generation and one old.
  *
- * <p>The session never asks what kind of source it holds. A database is opened by the caller, who
- * keeps it for Hibernate access and closes it once the session is shut down, so nothing here reaches
- * Hibernate.
+ * <p>The session never asks what kind of source it holds, so nothing here reaches Hibernate. A
+ * database is opened by the caller, who keeps it for Hibernate access. Closing it is optional - the
+ * JVM closes one still open at exit - and a caller closing it earlier shuts this session down first,
+ * because a session reading a closed database fails its next write, rebuild or tick.
  *
  * <p>Typical lifecycle managed by {@link SessionManager}:</p>
  * <ol>
@@ -275,8 +276,8 @@ public final class JpaSession {
      * Performs an orderly shutdown of this session.
      *
      * <p>Shuts down the scheduler, if one was built, then waits for any rebuild in flight before it
-     * marks the session inactive and clears all repositories. The source is not closed: whoever
-     * opened it closes it.</p>
+     * marks the session inactive and clears all repositories. The source is not closed: a database
+     * stays open for whoever opened it.</p>
      *
      * <p>After shutdown, {@link #getRepository(Class)} answers empty for every type. The session
      * object should be discarded.</p>

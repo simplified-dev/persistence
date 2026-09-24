@@ -104,7 +104,7 @@ public class User implements JpaModel {
 }
 ```
 
-Open a database and connect a session over it. The caller opens the database, hands it to the session as the source every registered type is read from, and closes it once the session is shut down:
+Open a database and connect a session over it. The caller opens the database and hands it to the session as the source every registered type is read from:
 
 ```java
 ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(User.class);
@@ -139,6 +139,8 @@ database.close();
 ```
 
 A write that goes straight to Hibernate like this bypasses the session, so a type the session registers keeps the rows it held until its next rebuild; write a registered type through the session instead.
+
+Shutting down is optional. A `SessionManager` holding a session and a `RelationalSource` still open each register a JVM shutdown hook, which shuts the sessions down and closes the database at exit; shutting down explicitly releases them earlier and removes the hooks. Sessions go first, because a session reading a closed database fails its next write, rebuild or tick. The JVM runs shutdown hooks concurrently, so a rebuild or tick still running at exit can fail against a database that is closing.
 
 A session over layered JSON documents opens nothing and closes nothing - the source is built and handed in:
 

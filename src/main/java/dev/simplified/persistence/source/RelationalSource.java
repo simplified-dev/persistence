@@ -62,9 +62,13 @@ import java.util.function.Function;
  * {@link Source.Writable} like any other source, which is what lets a repository read a table the
  * same way it reads a document.
  *
- * <p>Whoever opens one holds it: for the Hibernate access below, for the session it is handed to, and
- * to close it once every session reading it is shut down. An open that fails part way releases what it
- * had acquired before it throws.
+ * <p>Whoever opens one holds it, for the Hibernate access below and for the session it is handed to.
+ * Closing it is optional: a JVM shutdown hook closes a database still open at exit, and
+ * {@link #close()} releases it earlier. Every session reading it is shut down first, because a session
+ * reading a closed database fails its next write, rebuild or tick. JVM shutdown hooks run
+ * concurrently, so a rebuild or tick still running at exit can fail against a database that is
+ * closing. An open that fails part way releases what it had acquired before it throws, and registers
+ * no hook.
  *
  * <p>A relational source always accepts writes. Refusing one is the database's job, through the
  * permissions the connection was opened under, rather than this library's.
@@ -131,6 +135,11 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      */
     @Getter private final @NotNull SessionFactory sessionFactory;
 
+    /**
+     * JVM shutdown hook that closes this database at exit, removed by {@link #close()}.
+     */
+    private final @NotNull Thread shutdownHook;
+
     private RelationalSource(
         @NotNull Builder builder,
         @NotNull ConcurrentList<Class<JpaModel>> models,
@@ -158,6 +167,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         // manager is closed; asking under a class loader of the database's own is what keeps the
         // provider from answering one another database already holds.
         StandardServiceRegistry registry = null;
+        SessionFactory factory = null;
         CachingProvider cachingProvider = Caching.getCachingProvider(EhcacheCachingProvider.class.getName());
         this.cacheManager = cachingProvider.getCacheManager(
             cachingProvider.getDefaultURI(),
@@ -178,8 +188,17 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
                 .build();
             this.serviceRegistry = registry;
             this.metadata = this.createMetadata(this.createMetadataSources().getMetadataBuilder(), gson);
-            this.sessionFactory = this.metadata.buildSessionFactory();
+            factory = this.metadata.buildSessionFactory();
+            this.sessionFactory = factory;
+
+            // Registered last, so an open that fails registers nothing; the JVM refuses it only
+            // once it is already exiting.
+            this.shutdownHook = new Thread(this::close, "relational-source-close");
+            Runtime.getRuntime().addShutdownHook(this.shutdownHook);
         } catch (RuntimeException exception) {
+            if (factory != null)
+                factory.close();
+
             if (registry != null)
                 StandardServiceRegistryBuilder.destroy(registry);
 
@@ -327,9 +346,24 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      * Closes the session factory, which drops the schema a {@code create-drop} policy created,
      * destroys the service registry and closes this database's cache manager, which no other
      * database shares.
+     *
+     * <p>Closing is optional: a JVM shutdown hook closes a database still open at exit. Closing it
+     * explicitly releases it earlier and removes the hook, so the JVM no longer holds it; a call made
+     * while the JVM is already exiting leaves the hook to the JVM. Every session reading this database
+     * is shut down first, because a session reading a closed database fails its next write, rebuild or
+     * tick.
+     *
+     * <p>A second call, from this thread or another, finds every step already done and does nothing
+     * further.
      */
     @Override
-    public void close() {
+    public synchronized void close() {
+        try {
+            Runtime.getRuntime().removeShutdownHook(this.shutdownHook);
+        } catch (IllegalStateException ignore) { }
+
+        // Each step is a no-op once done: the factory ignores a second close, the registry a second
+        // destroy, and the manager is asked whether it is closed.
         this.sessionFactory.close();
         StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
 
@@ -671,8 +705,8 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
          * @param models the types the database maps
          * @param gson the parser custom Hibernate types bind through
          * @param logLevel the level the connection logs at
-         * @return the open database, which the caller owns and must close once every session reading
-         *         it is shut down
+         * @return the open database, which the caller holds and the JVM closes at exit if it is still
+         *         open; a caller closing it earlier shuts every session reading it down first
          */
         public @NotNull RelationalSource open(
             @NotNull ConcurrentList<Class<JpaModel>> models,

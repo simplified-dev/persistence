@@ -25,11 +25,11 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > means.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `write` at
->   `:232`, `openSession` at `:259`, `with` at `:269` and `:286`, `transaction` at `:301` and `:317`,
->   the generated `getSessionFactory()` on the field at `:132`;
+>   `:251`, `openSession` at `:278`, `with` at `:288` and `:305`, `transaction` at `:320` and `:336`,
+>   the generated `getSessionFactory()` on the field at `:136`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:67` - `Writable.write`;
->   `src/main/java/dev/simplified/persistence/JpaConfig.java:26` - `source()`;
+>   `src/main/java/dev/simplified/persistence/JpaConfig.java:28` - `source()`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:119` - `getRows()`
 > - Type: **RISK**
 > - Status: **OPEN** - inherent to holding a generation, accepted deliberately
@@ -121,7 +121,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > rebuild leaves a type `DEGRADED`.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/Hydration.java:57` - `blocking()`;
->   `src/main/java/dev/simplified/persistence/JpaSession.java:103` - `cacheRepositories()`;
+>   `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`;
 >   `src/main/java/dev/simplified/persistence/HydrationState.java:17` - the reader contract in its
 >   class javadoc; `src/main/java/dev/simplified/persistence/JpaRepository.java:119` - `getRows()`,
 >   `:193` - `fail()`
@@ -145,8 +145,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > writes through it - so there the re-apply recovers a generation nobody reads; the stale rows matter
 > where a written session is also read, which today is the bot's.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:239` - `write(WriteRequest)`,
->   `:139` - `hydrate(ConcurrentList)`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:240` - `write(WriteRequest)`,
+>   `:140` - `hydrate(ConcurrentList)`;
 >   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:192` - `apply`,
 >   which reschedules at `:214`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:46` - `process`, which
@@ -156,18 +156,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN** - the write and its rebuild report through one exception, and a failed rebuild is
 >   not retried
-
-> #### The caller owns closing a database, including after a failed connect
-> A session never opens or closes its source. `SessionManager.connect` shuts down a session whose first
-> hydration throws, but the database the caller opened for it stays open - its pool, its service
-> registry and its cache regions - until the caller closes it. The caller also owns the order: closing
-> the database before shutting the session down lets a due tick or a write reach a closed session
-> factory, and a database shared by two sessions has to outlive both.
->
-> - Affected: `src/main/java/dev/simplified/persistence/SessionManager.java:47` - `connect(JpaConfig)`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:332` - `close()`
-> - Type: **RISK**
-> - Status: **OPEN** - documented on `connect` and `open`; nothing enforces it
 
 > #### The background cadence has never run
 > No model or fixture in the workspace declares `@Hydration`, so the scheduler a session builds for a
@@ -182,12 +170,12 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > good. Whether the cadence stays at all is undecided - every current consumer is rebuilt by writes
 > alone.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:103` - `cacheRepositories()`,
->   which builds the scheduler at `:119-122`, `:198` - `hydrateDue()`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`,
+>   which builds the scheduler at `:120-123`, `:199` - `hydrateDue()`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:102` - `isDue()`, `:112` -
 >   `isPastStaleness()`, `:200` - `markStale()`;
 >   `src/main/java/dev/simplified/persistence/HydrationState.java:42` - `STALE`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:493` -
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:527` -
 >   `buildCacheConfiguration(Class)`; `src/main/java/dev/simplified/persistence/Hydration.java`
 > - Type: **GAP**
 > - Status: **OPEN** - keep and test it, or delete it
@@ -207,9 +195,9 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `ClassCastException` out of `connect` rather than a `JpaException`. No `@Linked` field in the
 > workspace has one.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:306` - `dependentsOf`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:307` - `dependentsOf`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:291` - `targetOf`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:222` - `read`
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:241` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
 
@@ -225,9 +213,9 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > holding the source or a `JpaConfig` over it can read it.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - the generated
->   `getSessionFactory()` on the field at `:132` and `getMetadata()` on the field at `:122`, the
->   sessions `openSession()` at `:259`, `with` at `:269` and `:286` and `transaction` at `:301` and
->   `:317` hand out, and `createProperties` at `:385`
+>   `getSessionFactory()` on the field at `:136` and `getMetadata()` on the field at `:126`, the
+>   sessions `openSession()` at `:278`, `with` at `:288` and `:305` and `transaction` at `:320` and
+>   `:336` hand out, and `createProperties` at `:419`
 > - Type: **RISK**
 > - Status: **OPEN** - narrowed, not closed
 
@@ -242,8 +230,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `Simplified-Dev/scheduler/src/main/java/dev/simplified/scheduler/Scheduler.java:64` - the
 >   constructor, which adds the hook at `:83`, and `:331` - `shutdown()`;
->   `src/main/java/dev/simplified/persistence/JpaSession.java:103` - `cacheRepositories()`, whose tick
->   at `:121` is bound to the session
+>   `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`, whose tick
+>   at `:122` is bound to the session
 > - Type: **RISK**
 > - Status: **OPEN** - latent, since no type declares a cadence
 
