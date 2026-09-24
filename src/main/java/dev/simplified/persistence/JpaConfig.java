@@ -25,10 +25,11 @@ import org.jetbrains.annotations.NotNull;
  *
  * <p>What registering costs is memory and rebuilds. The session holds every row of a registered type
  * in memory, and re-reads it, with every registered type linking into it, after each write through
- * the session and at each {@link Hydration} tick that reads it. A relational type left out is read
- * per query instead, through the database's Hibernate access. There the second-level cache serves a
- * lookup by id only for a type declared {@link Cacheable} or {@link Cache}, and a query result only
- * when the query cache is on and the query is marked cacheable.
+ * the session and at each {@link Hydration} tick it comes due at, unless the source's fingerprint
+ * shows it has not moved. A relational type left out is read per query instead, through the
+ * database's Hibernate access. There the second-level cache serves a lookup by id only for a type
+ * declared {@link Cacheable} or {@link Cache}, and a query result only when the query cache is on and
+ * the query is marked cacheable.
  *
  * @param models the model classes the session holds a repository for, typically discovered through
  *        {@link JpaModel#resolveModels(Class)}
