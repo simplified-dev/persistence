@@ -78,8 +78,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    as well. Besides `scheduler`, two of the thirteen are checked out on branches rather than
 >    `master`. `discord4j-framework`'s `9696ca5` pins at `:43-49` are on `offline-test-harness`,
 >    49 commits ahead of its upstream, while its `master` pins `collections` `2f2aa58` at `:38-44`,
->    and pushing the branch publishes the `TreePage` and `ItemHandler` removals the `bot` entry
->    names. `asset-renderer` is on `refactor/package-redesign`, 12 commits past `origin/master`,
+>    and pushing the branch publishes its removal of `TreePage` and `ItemHandler`.
+>    `asset-renderer` is on `refactor/package-redesign`, 12 commits past `origin/master`,
 >    which carries the same pins at the same lines. Which branch each of the two re-pins and builds
 >    on is left to the user.
 > 3. The second pass. Each library step 2 rebuilt is a new sha the chain has to follow. persistence
@@ -87,13 +87,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    github follows `client` and `gson-extras`. Then `SkyBlock-Simplified/api`, skyblock, hypixel and
 >    data, in that order, each move their persistence pin and every pin on a module step 2 or this
 >    pass rebuilt; `SkyBlock-Simplified/api` lands on `master` again, so data's `master-SNAPSHOT`
->    follows it. bot and `SkyBlock-Simplified/server`, which pin modules from both sides, move last,
->    and bot's cannot be verified until it builds (below). `bot` also takes `manager`, skyblock,
->    mojang, `SkyBlock-Simplified/api`, hypixel, `asset-renderer` and `discord4j-framework` as
->    `master-SNAPSHOT`, so it reaches one sha per artifact only once each of those modules' `master`
->    carries its rebuild, or once those lines pin shas. skyblock and hypixel are built from
->    `feat/indexing` here, and their `origin/master` is still `d566734` and `d20adcd`, so until they
->    land on `master` bot's snapshots resolve the jars from before the chain.
+>    follows it. `SkyBlock-Simplified/server`, which pins modules from both sides, moves last. `bot`
+>    does not build and is not part of the cascade.
 >
 > - Affected: `build.gradle.kts:21-25`; `Simplified-Api/github/build.gradle.kts:35-37`;
 >   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38-42`, `:46`;
@@ -111,7 +106,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `Minecraft-Library/asset-renderer/build.gradle.kts:174-179`, `:183`, `:189`, `:195`;
 >   `Simplified-Dev/discord4j-framework/build.gradle.kts:43-49` on `offline-test-harness`, `:38-44` on
 >   `master`; `Minecraft-Library/nbt-factory/build.gradle.kts:38`;
->   `SkyBlock-Simplified/bot/build.gradle.kts:48-51`, `:54-57`, `:60-61`;
 >   `SkyBlock-Simplified/server/build.gradle.kts:42-44`, `:47-50`, `:53`;
 >   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`;
 >   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `1c0dc05`
@@ -183,75 +177,3 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:167` - `Writable.write`
 > - Type: **RISK**
 > - Status: **OPEN**
-
-> #### `bot` does not build, for reasons that predate this work
-> `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so its write sites and its
-> relational session are unverified beyond review.
->
-> Compiled through the root composite, `bot` fails with 67 errors across 18 of its own files, none of
-> them naming anything this work removed. Six - `TreePage` and `ItemHandler` - name types
-> `discord4j-framework` removes only on its unpushed `offline-test-harness` branch, which the
-> composite substitutes for the `master-SNAPSHOT` `bot` declares. The rest name removals already on a
-> published `master` - `collections`' `unmodifiable` package, `hypixel`'s `profile_stats`, skyblock's
-> retired bonus-stat models - or `nbt-factory` subpackages it never had. `LinkCommand` and
-> `RepGiveCommand` are committed, so `HEAD` fails too. Every error is an import or a signature, so
-> javac never reached a method body and more may follow. `Minecraft-Library/asset-renderer`, which
-> `bot` declares directly, compiles, and nothing in `bot` imports it.
->
-> `bot` also carries an uncommitted tree from an unrelated in-progress pass. `SimplifiedBot`,
-> `TestLifecycleListener` and the untracked `JpaExtractorStore` are part of it, so the lines this
-> design changed in them - `SkyBlockData.connect()` without settings, the bot opening and registering
-> its own database, `JpaExtractorStore` holding a `RelationalSource` - sit uncommitted in that tree.
-> The same pass restores `Solution` and `OptimizerTest`, which are disabled stubs at `HEAD`, and 16 of
-> the 18 failing files are in it; the restored `OptimizerTest` also calls `MinecraftApi`,
-> `JpaConfig.commonSql()`, `getInitialization()` and `getRepositoryCache()`, none of which exists.
->
-> Once it builds, three things stand between it and a working database. Two of its models carry
-> mappings Hibernate refuses when the database opens: `OptimizerSupportItem` keys on a `@ManyToOne` to
-> the corpus's `Item`, which no bot database maps, and `SkyBlockEventTimer` puts `@ManyToOne` on the
-> enum `Season`. `JpaExtractor` sits outside the package the bot's models are discovered from, so the
-> database does not map it and nothing installs `JpaExtractorStore`. And `TestLifecycleListener`
-> connects the corpus over GitHub and registers no bot session, where a test run wants the disk
-> checkout, which `SkyBlockData.connect(origin)` takes, and an in-memory database over the same
-> models `SimplifiedBot` registers.
->
-> It also has to move its own tables off the corpus's manager, which is this design's change rather
-> than one that predates it. `SkyBlockData` keeps its `SessionManager` private, holds only the corpus
-> session on it and offers no write. javac stops at the imports and signatures above, so none of
-> these sites is among the 67 errors yet:
->
-> - `SimplifiedBot.main` connects its tables on a `SessionManager` it owns rather than on
->   `SkyBlockData.getSessionManager()` (`SimplifiedBot.java:58`), shuts that session down on the
->   same manager in its exit hook (`:60`), and its comment at `:49-52` stops saying
->   `SkyBlockData.getRepository` and `SkyBlockData.write` reach both.
-> - `LinkCommand` and `RepGiveCommand` write through that manager rather than `SkyBlockData.write`
->   (`LinkCommand.java:72`, `:87`; `RepGiveCommand.java:84`).
-> - Every read of a bot table goes through that manager rather than `SkyBlockData.getRepository`,
->   which answers corpus types only: `AppUser` at `LinkCommand.java:59`, `AboutCommand.java:81`,
->   `SkyBlockUser.java:55` and `:109`, and `SkyBlockUserCommand.java:785`; `AppGuildReputationType`
->   and `AppGuildReputation` at `RepGiveCommand.java:62`, `:69` and `:129` and
->   `RepCheckCommand.java:70` and `:81`; `SbsLegacyDonor` at `AboutCommand.java:151`; and
->   `OptimizerMobType` at `OptimizerTest.java:47`.
-> - `TestLifecycleListener` stops calling the getter, at `:21` and at `:29-30`, where it shuts the
->   corpus session down. That session is held until exit and its manager's hook shuts it down, so
->   nothing replaces the shutdown.
->
-> - Affected: `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/optimizer/modules/common/Solution.java:9-11`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:12`, `:59`, `:72`,
->   `:87`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepGiveCommand.java:8`,
->   `:62`, `:69`, `:84`, `:129`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepCheckCommand.java:70`,
->   `:81`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/AboutCommand.java:81`, `:151`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/util/SkyBlockUser.java:55`, `:109`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/util/SkyBlockUserCommand.java:785`;
->   `SkyBlock-Simplified/bot/build.gradle.kts:60`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:49-60`;
->   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java:21`, `:29-30`;
->   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/optimizer/OptimizerTest.java:33`, `:47`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/feature/extractor/JpaExtractorStore.java`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/OptimizerSupportItem.java:34`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/SkyBlockEventTimer.java:42`, `:51`
-> - Type: **GAP**
-> - Status: **OPEN** - no cause of the build failure belongs to this design
