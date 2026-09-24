@@ -53,12 +53,6 @@ dependencies {
     implementation(libs.mariadb)
     implementation(libs.h2)
     implementation(libs.ehcache)
-
-    // Optional JCache provider - required at runtime only when a consumer selects JpaCacheProvider.HAZELCAST_*.
-    // compileOnly keeps Hazelcast off the published runtime classpath; testRuntimeOnly makes the
-    // parallel JpaCacheHazelcastTest suite functional without forcing it on consumers.
-    compileOnly(libs.hazelcast)
-    testRuntimeOnly(libs.hazelcast)
 }
 
 tasks.test {

@@ -8,7 +8,6 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.CacheMissingStrategy;
 import dev.simplified.persistence.Hydration;
-import dev.simplified.persistence.JpaCacheProvider;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.exception.JpaException;
@@ -17,6 +16,7 @@ import dev.simplified.reflection.Reflection;
 import dev.simplified.util.Logging;
 import jakarta.persistence.criteria.CriteriaQuery;
 import org.ehcache.core.Ehcache;
+import org.ehcache.jsr107.EhcacheCachingProvider;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.StatelessSession;
@@ -39,9 +39,10 @@ import javax.cache.Caching;
 import javax.cache.configuration.MutableConfiguration;
 import javax.cache.expiry.Duration;
 import javax.cache.expiry.ModifiedExpiryPolicy;
+import javax.cache.spi.CachingProvider;
 import java.lang.reflect.Modifier;
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -56,9 +57,10 @@ import java.util.function.Function;
  * never renders a url: the shape of the address is decided by which driver was reached for.
  *
  * <p>Everything Hibernate needs to exist is here and nowhere else - the service registry, the
- * metadata, the session factory and the JCache regions - so a session reading a document source holds
- * none of it. It is a {@link Source.Writable} like any other source, which is what lets a repository
- * read a table the same way it reads a document.
+ * metadata, the session factory and the cache manager its JCache regions live in, which no other
+ * database shares - so a session reading a document source holds none of it. It is a
+ * {@link Source.Writable} like any other source, which is what lets a repository read a table the
+ * same way it reads a document.
  *
  * <p>Whoever opens one holds it: for the Hibernate access below, for the session it is handed to, and
  * to close it once every session reading it is shut down. An open that fails part way releases what it
@@ -103,12 +105,16 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     private final @NotNull CacheMissingStrategy missingCacheStrategy;
     private final long queryResultsTTL;
     private final long defaultCacheExpiryMs;
-    private final @NotNull JpaCacheProvider cacheProvider;
 
     /**
      * The types it maps.
      */
     private final @NotNull ConcurrentList<Class<JpaModel>> models;
+
+    /**
+     * The cache manager this database's regions live in, which no other database shares.
+     */
+    private final @NotNull CacheManager cacheManager;
 
     /**
      * Hibernate entity metadata including custom type registrations and column adjustments.
@@ -141,21 +147,25 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         this.missingCacheStrategy = builder.missingCacheStrategy;
         this.queryResultsTTL = builder.queryResultsTTL;
         this.defaultCacheExpiryMs = builder.defaultCacheExpiryMs;
-        this.cacheProvider = builder.cacheProvider;
         this.models = models;
 
         this.applyLogLevel(logLevel);
         this.requireDriverOnClasspath();
 
         // Everything acquired from here on is released again when opening fails part way, because
-        // the caller receives no source to close.
+        // the caller receives no source to close. The cache manager is not asked for until the
+        // driver is known to load, since the provider keeps every manager it hands out until that
+        // manager is closed; asking under a class loader of the database's own is what keeps the
+        // provider from answering one another database already holds.
         StandardServiceRegistry registry = null;
+        CachingProvider cachingProvider = Caching.getCachingProvider(EhcacheCachingProvider.class.getName());
+        this.cacheManager = cachingProvider.getCacheManager(
+            cachingProvider.getDefaultURI(),
+            new URLClassLoader(new URL[0], cachingProvider.getDefaultClassLoader())
+        );
 
         try {
-            // The query-results and update-timestamps regions are only created when query caching is
-            // actually enabled - a HAZELCAST_* provider disables it unconditionally, so creating these
-            // would leave empty never-used JCache caches sitting on the cluster.
-            if (this.isQueryCacheEnabled()) {
+            if (this.usingQueryCache) {
                 this.buildCacheConfiguration(TIMESTAMPS_REGION, Duration.ETERNAL);
                 this.buildCacheConfiguration(
                     QUERY_RESULTS_REGION,
@@ -173,7 +183,9 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
             if (registry != null)
                 StandardServiceRegistryBuilder.destroy(registry);
 
-            this.destroyRegions();
+            if (!this.cacheManager.isClosed())
+                this.cacheManager.close();
+
             throw exception;
         }
     }
@@ -313,34 +325,22 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
      * Closes the session factory, which drops the schema a {@code create-drop} policy created,
-     * destroys the service registry and removes every cache region this opened.
+     * destroys the service registry and closes this database's cache manager, which no other
+     * database shares.
      */
     @Override
     public void close() {
         this.sessionFactory.close();
         StandardServiceRegistryBuilder.destroy(this.serviceRegistry);
-        this.destroyRegions();
+
+        if (!this.cacheManager.isClosed())
+            this.cacheManager.close();
     }
 
     /** {@inheritDoc} */
     @Override
     public @NotNull String toString() {
         return String.format("%s (%s)", this.url, this.driver.getSchemaPolicy());
-    }
-
-    /**
-     * Destroys the region of every mapped type and both query-cache regions, skipping any that does
-     * not exist - which is the Hazelcast path with query caching disabled.
-     *
-     * <p>A region is named after its type, or is one of the two shared names, in the provider's one
-     * manager, so a region this destroys is also the one any other database mapping the same type
-     * against the same provider is using.
-     */
-    private void destroyRegions() {
-        CacheManager cacheManager = this.resolveCacheManager();
-        this.models.forEach(model -> destroyCache(cacheManager, model.getName()));
-        destroyCache(cacheManager, TIMESTAMPS_REGION);
-        destroyCache(cacheManager, QUERY_RESULTS_REGION);
     }
 
     /**
@@ -359,20 +359,6 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
         if (this.credentials.isPresent())
             Logging.setLevel("com.zaxxer.hikari", level);
-    }
-
-    /**
-     * Whether Hibernate's query cache is active for this database.
-     *
-     * <p>A Hazelcast provider disables it unconditionally: the query results region wraps results in
-     * a {@code Serializable} holder that Hazelcast routes through {@code ObjectOutputStream}, which
-     * walks the object graph with no hook for its own serialization service. Nothing on the read path
-     * consults the region, so disabling it removes the last code path that touches it.
-     */
-    private boolean isQueryCacheEnabled() {
-        return this.usingQueryCache
-            && this.cacheProvider != JpaCacheProvider.HAZELCAST_CLIENT
-            && this.cacheProvider != JpaCacheProvider.HAZELCAST_EMBEDDED;
     }
 
     /**
@@ -434,18 +420,15 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         properties.put("hibernate.cache.region.factory_class", "jcache");
         properties.put("hibernate.cache.use_reference_entries", true);
         properties.put("hibernate.cache.use_structured_entries", logLevel.includes(Logging.Level.DEBUG));
-        properties.put("hibernate.cache.use_query_cache", this.isQueryCacheEnabled());
+        properties.put("hibernate.cache.use_query_cache", this.usingQueryCache);
         properties.put("hibernate.cache.use_second_level_cache", this.using2ndLevelCache);
         properties.put("hibernate.javax.cache.missing_cache_strategy", this.missingCacheStrategy.getExternalRepresentation());
 
-        // Pin the JCache provider for Hibernate's internal JCacheRegionFactory so it does not call
-        // the no-arg lookup, which throws when more than one provider sits on the runtime classpath.
-        // Property names use the hibernate.javax.cache.* prefix per hibernate-jcache 7.3 - the
-        // jakarta-prefixed equivalents are not honored.
-        properties.put("hibernate.javax.cache.provider", this.cacheProvider.getProviderClassName());
-
-        if (this.cacheProvider.getConfigUri() != null)
-            properties.put("hibernate.javax.cache.uri", this.cacheProvider.getConfigUri());
+        // Handing Hibernate's JCacheRegionFactory the manager itself stops it resolving one of its
+        // own, which would be the provider's default and shared with every other database. The
+        // hibernate.javax.cache prefix is the one hibernate-jcache reads; a jakarta-prefixed name is
+        // not honored.
+        properties.put("hibernate.javax.cache.cache_manager", this.cacheManager);
 
         if (this.cacheConcurrencyStrategy != CacheConcurrencyStrategy.NONE)
             properties.put("hibernate.cache.default_cache_concurrency_strategy", this.cacheConcurrencyStrategy.toAccessType().getExternalName());
@@ -520,47 +503,18 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     }
 
     /**
-     * Creates a JCache configuration with the given name and TTL, reusing an existing region.
+     * Creates a JCache region in this database's cache manager with the given name and TTL.
      *
      * @param cacheName the region name
      * @param duration how long an entry lives after it is written
      */
     private void buildCacheConfiguration(@NotNull String cacheName, @NotNull Duration duration) {
-        CacheManager cacheManager = this.resolveCacheManager();
-
-        if (cacheManager.getCache(cacheName, Object.class, Object.class) != null)
-            return;
-
-        cacheManager.createCache(
+        this.cacheManager.createCache(
             cacheName,
             new MutableConfiguration<>()
                 .setStoreByValue(false)
                 .setExpiryPolicyFactory(ModifiedExpiryPolicy.factoryOf(duration))
         );
-    }
-
-    /**
-     * Resolves the JCache manager for this database's provider, opening it against the provider's
-     * configuration resource when it names one.
-     *
-     * @return the cache manager for the configured provider
-     */
-    private @NotNull CacheManager resolveCacheManager() {
-        javax.cache.spi.CachingProvider cachingProvider = Caching.getCachingProvider(this.cacheProvider.getProviderClassName());
-
-        if (this.cacheProvider.getConfigUri() == null)
-            return cachingProvider.getCacheManager();
-
-        try {
-            return cachingProvider.getCacheManager(new URI(this.cacheProvider.getConfigUri()), cachingProvider.getDefaultClassLoader());
-        } catch (URISyntaxException exception) {
-            throw new JpaException(exception, "Invalid cache provider config URI '%s'", this.cacheProvider.getConfigUri());
-        }
-    }
-
-    private static void destroyCache(@NotNull CacheManager cacheManager, @NotNull String name) {
-        if (cacheManager.getCache(name, Object.class, Object.class) != null)
-            cacheManager.destroyCache(name);
     }
 
     /**
@@ -644,7 +598,6 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         private @NotNull CacheMissingStrategy missingCacheStrategy = CacheMissingStrategy.CREATE_WARN;
         private long queryResultsTTL = 30;
         private long defaultCacheExpiryMs = 30_000;
-        private @NotNull JpaCacheProvider cacheProvider = JpaCacheProvider.EHCACHE;
 
         private Builder(@NotNull JpaDriver driver, @NotNull String url) {
             this.driver = driver;
@@ -704,14 +657,6 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
          */
         public @NotNull Builder withDefaultCacheExpiryMs(long defaultCacheExpiryMs) {
             this.defaultCacheExpiryMs = defaultCacheExpiryMs;
-            return this;
-        }
-
-        /**
-         * Sets the {@link JpaCacheProvider} backing the JCache second-level cache.
-         */
-        public @NotNull Builder withCacheProvider(@NotNull JpaCacheProvider cacheProvider) {
-            this.cacheProvider = cacheProvider;
             return this;
         }
 

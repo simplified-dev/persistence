@@ -1,6 +1,6 @@
 # Persistence
 
-JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides repositories that hold each model's rows in memory, session management, per-type hydration cadences, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
+JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides repositories that hold each model's rows in memory, session management, per-type hydration cadences, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
 
 > [!IMPORTANT]
 > This library is under active development. APIs may change between releases until a stable `1.0.0` is published.
@@ -28,7 +28,7 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache or Hazelcast), cust
 - **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none has no background rebuild, and is rebuilt only when it, or a type it links into, is written through its session
 - **Links** - `@Linked` fills a field with the row, or rows, its id property names, and keeps that field out of serialization
 - **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
-- **L2 caching** - EhCache- or Hazelcast-backed second-level cache for an open database, with a per-type TTL taken from `@Hydration` and configurable cache concurrency strategies
+- **L2 caching** - EhCache-backed second-level cache for an open database, held in a cache manager no other database shares, with a per-type TTL taken from `@Hydration` and configurable cache concurrency strategies
 - **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
 - **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`
@@ -186,7 +186,6 @@ persistence/
 │   │   ├── CacheMissingStrategy.java
 │   │   ├── Hydration.java
 │   │   ├── HydrationState.java
-│   │   ├── JpaCacheProvider.java
 │   │   ├── JpaConfig.java
 │   │   ├── JpaExclusionStrategy.java
 │   │   ├── JpaGsonContributor.java
@@ -240,7 +239,6 @@ persistence/
 | [MariaDB Connector/J](https://mariadb.com/kb/en/mariadb-connector-j/) | 3.5.3 | Implementation |
 | [H2 Database](https://h2database.com/) | 2.3.232 | Implementation |
 | [EhCache](https://www.ehcache.org/) | 3.10.8 | Implementation |
-| [Hazelcast](https://hazelcast.com/) | 5.6.0 | Compile-only (test runtime); required only for a `HAZELCAST_*` cache provider |
 | [Log4j2](https://logging.apache.org/log4j/) | 2.25.3 | API (log level configuration and `@Log4j2` logging) |
 | [JetBrains Annotations](https://github.com/JetBrains/java-annotations) | 26.0.2 | API |
 | [Simplified Annotations](https://github.com/Simplified-Dev/annotations) | 2.6.1 | Compile-only |

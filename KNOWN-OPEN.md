@@ -25,8 +25,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > means.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `write` at
->   `:220`, `openSession` at `:247`, `with` at `:257` and `:274`, `transaction` at `:289` and `:305`,
->   the generated `getSessionFactory()` on the field at `:126`;
+>   `:232`, `openSession` at `:259`, `with` at `:269` and `:286`, `transaction` at `:301` and `:317`,
+>   the generated `getSessionFactory()` on the field at `:132`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:67` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/JpaConfig.java:26` - `source()`;
@@ -165,7 +165,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > factory, and a database shared by two sessions has to outlive both.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/SessionManager.java:47` - `connect(JpaConfig)`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:319` - `close()`
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:332` - `close()`
 > - Type: **RISK**
 > - Status: **OPEN** - documented on `connect` and `open`; nothing enforces it
 
@@ -187,7 +187,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:102` - `isDue()`, `:112` -
 >   `isPastStaleness()`, `:200` - `markStale()`;
 >   `src/main/java/dev/simplified/persistence/HydrationState.java:42` - `STALE`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:510` -
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:493` -
 >   `buildCacheConfiguration(Class)`; `src/main/java/dev/simplified/persistence/Hydration.java`
 > - Type: **GAP**
 > - Status: **OPEN** - keep and test it, or delete it
@@ -209,33 +209,9 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:306` - `dependentsOf`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:291` - `targetOf`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:210` - `read`
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:222` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
-
-> #### Closing one database breaks the cache regions every other open database uses
-> Every `JpaCacheProvider` names no configuration resource, so every database a process opens over one
-> provider shares that provider's default cache manager: `RelationalSource` creates its types' regions
-> in it whether or not its caches are on, and Hibernate's `JCacheRegionFactory` resolves the same one.
-> Regions are named after the mapped type, or are one of the two shared query-cache names, and opening
-> reuses a region that already exists - with the TTL it was first created with.
->
-> Closing a database with a cache on closes its session factory, which closes every region Hibernate
-> used and, with the service registry it takes down, the cache manager itself - every region in it,
-> whichever database created it. Another open database's Hibernate keeps the closed caches, and its
-> next cached read or write throws `IllegalStateException` - `Cache[...] is closed` - whether or not
-> the two map a type in common. Closing a database with both caches off leaves the manager open, and
-> `destroyRegions()` then destroys that database's type regions and both query-cache regions in it, so
-> another database's next write or cacheable query throws the same way. A
-> `hibernate.cache.region_prefix` per database does not separate them, because the manager is still
-> shared. No caller opens two databases with a cache on today; `GsonTypeRoundTripTest` opens two with
-> both off, where nothing reads the regions.
->
-> - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - `close()` at
->   `:319`, `destroyRegions()` at `:339`, `createMetadataSources()` at `:461`,
->   `buildCacheConfiguration(String, Duration)` at `:528`, `resolveCacheManager()` at `:548`
-> - Type: **RISK**
-> - Status: **OPEN** - a cache manager of each database's own would separate them
 
 > #### The connection password is readable from an open database's session factory
 > `RelationalSource` keeps its credentials in a private record and builds its settings map as a
@@ -249,9 +225,9 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > holding the source or a `JpaConfig` over it can read it.
 >
 > - Affected: `src/main/java/dev/simplified/persistence/source/RelationalSource.java` - the generated
->   `getSessionFactory()` on the field at `:126` and `getMetadata()` on the field at `:116`, the
->   sessions `openSession()` at `:247`, `with` at `:257` and `:274` and `transaction` at `:289` and
->   `:305` hand out, and `createProperties` at `:399`
+>   `getSessionFactory()` on the field at `:132` and `getMetadata()` on the field at `:122`, the
+>   sessions `openSession()` at `:259`, `with` at `:269` and `:286` and `transaction` at `:301` and
+>   `:317` hand out, and `createProperties` at `:385`
 > - Type: **RISK**
 > - Status: **OPEN** - narrowed, not closed
 
