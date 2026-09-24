@@ -151,10 +151,12 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > cached tip has expired. Until then the writing session serves the rows from before its own write -
 > for the corpus's ten-minute cadence, between ten and twenty minutes, since the rebuild's
 > publication restarts the cadence - and a type with no cadence of its own keeps them until a later
-> rebuild covers it or the session connects again. No production session both writes and reads the
-> corpus: `SkyBlockData.connect()` reads through a source with no write half, and data's
+> rebuild covers it or the session connects again. No deployment in the workspace both writes and
+> reads the corpus: `SkyBlockData.connect()` reads through a source with no write half, and data's
 > `WriteQueueConsumer` writes through the source `SkyBlockData.writing(...)` returns with no session
-> over it.
+> over it. The path skyblock's README documents for a token-holding caller - connecting
+> `new JpaConfig(..., SkyBlockData.writing(corpus))` on its own `SessionManager` and writing through
+> that session - is exactly the one this affects.
 >
 > - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
 >   `Writing.layersOf`, `:57` - `read`;
