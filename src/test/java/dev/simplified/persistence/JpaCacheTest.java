@@ -24,8 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers what a relational type gets from holding a generation, and what the second-level cache is
- * still for once repository reads stop consulting it.
+ * What a relational type gets from holding a generation, and what the second-level cache is still for
+ * once repository reads stop consulting it.
  */
 @Tag("slow")
 class JpaCacheTest {
@@ -82,6 +82,7 @@ class JpaCacheTest {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
         Statistics stats = this.database.getSessionFactory().getStatistics();
+        assertTrue(stats.isStatisticsEnabled(), "a count of zero means nothing with statistics off");
         stats.clear();
 
         // Every finder is written over the held generation, so none of them reaches a database.
@@ -93,8 +94,8 @@ class JpaCacheTest {
     }
 
     @Test
-    @DisplayName("a link resolved at hydration survives into the held rows")
-    void linksAreResolvedBeforePublication() {
+    @DisplayName("an association loaded with its row survives into the held generation")
+    void associationsSurviveIntoTheHeldRows() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
         ConcurrentList<TestChildModel> children = this.session.getRepository(TestChildModel.class).orElseThrow().findAll();

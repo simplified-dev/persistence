@@ -100,6 +100,16 @@ class JpaCacheHazelcastTest {
     }
 
     @Test
+    @DisplayName("the regions live in Hazelcast, and the query cache stays off under it")
+    void regionsLiveInHazelcast() {
+        assertNotNull(
+            Caching.getCachingProvider(PROVIDER_CLASS).getCacheManager().getCache(TestParentModel.class.getName(), Object.class, Object.class),
+            "the type's region should be created in the Hazelcast manager"
+        );
+        assertEquals("false", String.valueOf(this.database.getSessionFactory().getProperties().get("hibernate.cache.use_query_cache")));
+    }
+
+    @Test
     @DisplayName("a write reaches the origin and the generation follows it")
     void writeRehydrates() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
@@ -115,6 +125,7 @@ class JpaCacheHazelcastTest {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
         Statistics stats = this.database.getSessionFactory().getStatistics();
+        assertTrue(stats.isStatisticsEnabled(), "a count of zero means nothing with statistics off");
         stats.clear();
 
         // Every finder is written over the held generation, so none of them reaches a database.
@@ -126,8 +137,8 @@ class JpaCacheHazelcastTest {
     }
 
     @Test
-    @DisplayName("a link resolved at hydration survives into the held rows")
-    void linksAreResolvedBeforePublication() {
+    @DisplayName("an association loaded with its row survives into the held generation")
+    void associationsSurviveIntoTheHeldRows() {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
         ConcurrentList<TestChildModel> children = this.session.getRepository(TestChildModel.class).orElseThrow().findAll();

@@ -10,7 +10,7 @@ import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
 
 /**
- * Covers model discovery: which types an anchor finds, and the order it answers them in.
+ * Model discovery: which types an anchor finds, and the order it answers them in.
  */
 class JpaModelDiscoveryTest {
 

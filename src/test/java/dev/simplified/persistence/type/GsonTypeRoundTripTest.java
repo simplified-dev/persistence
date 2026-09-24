@@ -543,7 +543,8 @@ class GsonTypeRoundTripTest {
                 // hydration pass then reads every registered type, which is where the absence
                 // surfaces: connecting fails rather than mounting a session whose first query on
                 // this type would have.
-                assertThrows(JpaException.class, () -> manager.connect(new JpaConfig(models, floating)));
+                JpaException thrown = assertThrows(JpaException.class, () -> manager.connect(new JpaConfig(models, floating)));
+                assertTrue(thrown.getMessage().contains(FloatingOptionalModel.class.getName()), thrown.getMessage());
             } finally {
                 manager.shutdown();
                 floating.close();
