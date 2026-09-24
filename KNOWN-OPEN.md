@@ -59,45 +59,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **GAP**
 > - Status: **OPEN** - needs pushes and JitPack builds in dependency order, `collections` first
 
-> #### A single-valued link that resolves to nothing is set to null in silence
-> `@Linked` on a non-collection field resolves the id its argument names against the target type's
-> rows. When the id names no row, the field is set to `null` - including where the field is declared
-> `@NotNull`, as `Item.category` is, so the defect surfaces at whichever reader first follows it.
-> Hibernate's `optional = false` used to answer this by refusing the load; nothing answers it now.
->
-> The corpus does not currently exercise it: every single-valued link that carries an id resolves
-> across all 34 documents, which is what makes it a latent hazard rather than a live defect.
-> `FairySoul.zone` is not exercised at all, because `fairy_souls.json` holds no rows. The two stone
-> links carry no id, because `Reforge.stoneId` and `Power.stoneId` declare no `@SerializedName` while
-> the documents spell the key `stone`; bound, two reforge stones name no item. `02-flow.md` §5.4 says
-> the type should fail; the spine reserved the decision and it is still reserved.
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:261` - `resolveLinks`, which
->   assigns the miss at `:287`
-> - Type: **RISK**
-> - Status: **OPEN** - the policy is undecided, per spine §12
-
-> #### A collection-valued association is not followed by the rebuild rule
-> A write rebuilds every type linking into the written one through a `@Linked` field, or a field
-> carrying `@ManyToOne` or `@OneToOne`. Following JPA associations at all departs from the rule the
-> connection-flow decisions settled, which saw `@Linked` fields only, and that departure has not been
-> reviewed. A `@OneToMany` or `@ManyToMany` is not followed: the edge filter admits neither, and
-> `targetOf`, which reads every edge's target, casts the declared element type rather than resolving
-> it, so a raw or wildcard collection would throw and a map would yield no edge. No model in the
-> workspace declares one. The first that does, read from a database with its default lazy fetch, holds
-> a collection whose Hibernate session closed with the read, so it throws on first access whatever is
-> written; declared `fetch = EAGER`, it keeps the pre-write rows after a write to the element type.
->
-> `targetOf` already meets that limit on the `@Linked` side: a raw or wildcard element type throws a
-> `ClassCastException` out of `connect` rather than a `JpaException`. No `@Linked` field in the
-> workspace has one.
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:455` - `dependentsOf`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:339` - `targetOf`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:239` - `read`
-> - Type: **GAP**
-> - Status: **OPEN** - no model needs it yet
-
 > #### A document write to an overridden key is reverted by its own rebuild
 > `DocumentSource.Writable.write` merges every layer, applies the request and rewrites the first layer
 > with the whole merged set; the later layers are untouched. The rebuild that follows merges again and
@@ -133,6 +94,24 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:147` -
 >   `read(String, String)`, `:158` - `metadata`, `:257` - `poll`
 > - Type: **BUG**
+> - Status: **OPEN**
+
+> #### A queued corpus write skips the session's link check
+> `JpaSession.write` links an upsert's rows against the rows the session holds before anything reaches
+> the source, and refuses a row whose plain single-valued `@Linked` field carries no id or names no
+> row. The one production writer of the corpus, data's `WriteQueueConsumer`, holds no session: it
+> writes through the source `SkyBlockData.writing(...)` returns, so its upserts reach GitHub
+> unchecked, and a delete of a row other rows still name is checked on no path. Such a write lands as
+> a commit. A reading session whose tick finds the document moved then fails the rebuild that relinks
+> the dangling row, and every type that rebuild covers stays `DEGRADED` on its previous generation and
+> fails again at each tick; every `SkyBlockData.connect()` after the commit fails, corpus-wide. Both
+> last until another commit repairs the data.
+>
+> - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
+>   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:125` -
+>   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`;
+>   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
+> - Type: **RISK**
 > - Status: **OPEN**
 
 > #### A consumer can still force a full SkyBlock rehydration

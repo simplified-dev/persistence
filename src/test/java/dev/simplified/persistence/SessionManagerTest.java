@@ -8,7 +8,14 @@ import dev.simplified.persistence.linked.LinkedParent;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
+import dev.simplified.persistence.unfollowable.CollectionOwner;
+import dev.simplified.persistence.unfollowable.ElementOwner;
+import dev.simplified.persistence.unfollowable.LazyChild;
+import dev.simplified.persistence.unfollowable.LazyOneToOne;
+import dev.simplified.persistence.unfollowable.ManyToManyOwner;
+import dev.simplified.persistence.unfollowable.WildcardLinked;
 import dev.simplified.persistence.unmapped.ContractRow;
+import dev.simplified.reflection.Reflection;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,7 +25,11 @@ import org.junit.jupiter.api.Test;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static dev.simplified.persistence.linked.LinkedCorpus.parent;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -32,9 +43,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * The registry's routing of lookups and writes across the sessions it holds - here a read-only
  * session registered first and a writable one after it, the layout a consumer with one corpus and one
- * database of its own ends up with - and its reuse once it has been shut down to empty.
+ * database of its own ends up with - its reuse once it has been shut down to empty, and the types it
+ * refuses to connect before anything is read.
  */
 class SessionManagerTest {
+
+    @SuppressWarnings("unchecked")
+    private static @NotNull ConcurrentList<Class<JpaModel>> models(@NotNull Class<?>... types) {
+        ConcurrentList<Class<JpaModel>> listed = Concurrent.newList();
+
+        for (Class<?> type : types)
+            listed.add((Class<JpaModel>) type);
+
+        return listed.toUnmodifiable();
+    }
 
     private LinkedCorpus corpus;
     private SessionManager sessionManager;
@@ -144,6 +166,91 @@ class SessionManagerTest {
         }
 
         assertSame(reference, collected, "A manager shut down to empty is still reachable");
+    }
+
+    @Test
+    @DisplayName("a registered type with a collection, element-collection or lazy association is refused at connect, naming the field, before anything is read")
+    void anUnfollowableAssociationIsRefused() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+        SessionManager manager = new SessionManager();
+        Map<Class<?>, String> refusals = Map.of(
+            CollectionOwner.class, "Field 'parents' of '%s' declares @OneToMany, which a held generation cannot follow",
+            ManyToManyOwner.class, "Field 'parents' of '%s' declares @ManyToMany, which a held generation cannot follow",
+            ElementOwner.class, "Field 'tags' of '%s' declares @ElementCollection, which a held generation cannot follow",
+            LazyChild.class, "Field 'parent' of '%s' declares a lazy @ManyToOne, which a held generation cannot follow",
+            LazyOneToOne.class, "Field 'parent' of '%s' declares a lazy @OneToOne, which a held generation cannot follow"
+        );
+
+        try {
+            refusals.forEach((owner, message) -> {
+                JpaException thrown = assertThrows(
+                    JpaException.class,
+                    () -> manager.connect(new JpaConfig(models(LinkedParent.class, owner), corpus)),
+                    owner.getSimpleName()
+                );
+
+                assertThat(thrown.getMessage(), equalTo(String.format(message, owner.getName())));
+            });
+
+            assertThat(corpus.readsOf(LinkedParent.class), equalTo(0));
+            assertThat(manager.isActive(), is(false));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("a wildcard @Linked list is refused at connect as a JpaException, not a ClassCastException")
+    void aWildcardLinkIsRefused() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaException thrown = assertThrows(
+                JpaException.class,
+                () -> manager.connect(new JpaConfig(models(LinkedParent.class, WildcardLinked.class), corpus))
+            );
+
+            assertThat(thrown.getMessage(), equalTo("Field 'parents' of '" + WildcardLinked.class.getName() + "' names no model it can resolve to"));
+            assertThat(corpus.readsOf(LinkedParent.class), equalTo(0));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("a link or association resolves a plain model, an Optional of one or a list of one, and refuses every other shape as a JpaException")
+    void aTargetResolvesOnlyAModel() {
+        Reflection<Shapes> shapes = new Reflection<>(Shapes.class);
+
+        for (String resolved : List.of("plain", "optional", "list", "javaList"))
+            assertSame(LinkedParent.class, JpaRepository.targetOf(shapes.getField(resolved)), resolved);
+
+        for (String refused : List.of("raw", "wildcard", "set", "arrayList", "map", "array", "notModel")) {
+            JpaException thrown = assertThrows(JpaException.class, () -> JpaRepository.targetOf(shapes.getField(refused)), refused);
+            assertThat(thrown.getMessage(), equalTo("Field '" + refused + "' of '" + Shapes.class.getName() + "' names no model it can resolve to"));
+        }
+    }
+
+    /**
+     * One field per shape a link or association might declare.
+     */
+    @SuppressWarnings({ "unused", "rawtypes" })
+    private static final class Shapes {
+
+        private LinkedParent plain;
+        private Optional<LinkedParent> optional;
+        private ConcurrentList<LinkedParent> list;
+        private List<LinkedParent> javaList;
+        private ConcurrentList raw;
+        private Optional<? extends LinkedParent> wildcard;
+        private Set<LinkedParent> set;
+        private ArrayList<LinkedParent> arrayList;
+        private Map<String, LinkedParent> map;
+        private LinkedParent[] array;
+        private String notModel;
+
     }
 
     /**

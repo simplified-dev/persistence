@@ -15,6 +15,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -202,6 +203,8 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      *
      * @param rows the unpublished rows to fill in
      * @param lookup answers a target type's rows, keyed by their stringified id
+     * @throws JpaException if a single-valued link that is not an {@link Optional} carries no id or
+     *         names no row
      */
     void link(
         @NotNull ConcurrentList<T> rows,
@@ -253,11 +256,17 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * Resolves every link on one row against the lookups built for this generation.
      *
+     * <p>The linking field's type decides what a miss does. A list keeps the rows its ids name and
+     * drops the ids that name none. An {@link Optional} holds the row its id names, and is empty when
+     * the id is absent or names no row. Any other field has no way to say that nothing was found, so
+     * an absent id or one naming no row fails the link pass.
+     *
      * @param entity the row to fill in
      * @param reflection the reflection over this repository's type
      * @param lookups the target rows, keyed, one entry per linking field
+     * @throws JpaException if a single-valued link that is not an {@link Optional} carries no id or
+     *         names no row
      */
-    @SuppressWarnings("unchecked")
     private void resolveLinks(
         @NotNull T entity,
         @NotNull Reflection<?> reflection,
@@ -269,31 +278,35 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
             Object held = unwrapped(reflection.getField(idPropertyOf(field)).get(entity));
 
             if (Collection.class.isAssignableFrom(field.getFieldType())) {
-                Collection<String> ids = (Collection<String>) held;
+                Collection<?> ids = (Collection<?>) held;
 
-                if (ids == null || ids.isEmpty()) {
-                    field.set(entity, Concurrent.newList());
-                    continue;
-                }
-
-                field.set(entity, ids.stream()
-                    .map(lookup::get)
+                field.set(entity, ids == null ? Concurrent.newList() : ids.stream()
+                    .map(id -> lookup.get(String.valueOf(id)))
                     .filter(Objects::nonNull)
                     .collect(Concurrent.toList()));
 
                 continue;
             }
 
-            field.set(entity, held == null ? null : lookup.get(String.valueOf(held)));
+            JpaModel match = held == null ? null : lookup.get(String.valueOf(held));
+
+            if (field.getFieldType() == Optional.class)
+                field.set(entity, Optional.ofNullable(match));
+            else if (held == null)
+                throw new JpaException("Field '%s' of '%s' carries no id", field.getName(), this.type.getName());
+            else if (match == null)
+                throw new JpaException("Field '%s' of '%s' names '%s', which no row carries", field.getName(), this.type.getName(), held);
+            else
+                field.set(entity, match);
         }
     }
 
     /**
-     * Reads the id a property carries, whether it holds one outright or wraps it.
+     * Reads the id a property carries, whether it holds one outright or wraps it in an
+     * {@link Optional}.
      *
-     * <p>A link that may resolve to nothing declares its id as an {@link Optional}, and the id inside
-     * it is the key, not the wrapper - {@code String.valueOf} on the wrapper would produce
-     * {@code Optional[HUB]} and miss every row.
+     * <p>The key is the id inside the wrapper, not the wrapper - {@code String.valueOf} on the wrapper
+     * would produce {@code Optional[HUB]} and miss every row - and an empty wrapper carries no id.
      *
      * @param held the value the id property holds
      * @return the id, or {@code null} when the property carries none
@@ -326,22 +339,43 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     }
 
     /**
-     * Reads the type a linking or associating field resolves to, which is its element type when it
-     * holds many.
+     * Reads the model a linking or associating field resolves to: the type argument of an
+     * {@link Optional} or of a list, and otherwise the field's own type.
      *
      * <p>Read through {@link FieldAccessor#getFieldType()} rather than {@code getType()}, which
      * answers the class that declares the field.
      *
-     * @param field the linking field
+     * <p>A collection must be able to hold the {@link ConcurrentList} a link resolves into, so a
+     * {@code Set} or a list implementation is refused along with a map or an array, and the argument
+     * must be a model class rather than a wildcard, a type variable or nothing at all.
+     *
+     * @param field the linking or associating field
      * @return the target entity class
+     * @throws JpaException if the field names no model it can resolve to
      */
-    @SuppressWarnings("unchecked")
     static @NotNull Class<? extends JpaModel> targetOf(@NotNull FieldAccessor<?> field) {
-        if (!Collection.class.isAssignableFrom(field.getFieldType()))
-            return (Class<? extends JpaModel>) field.getFieldType();
+        Class<?> declared = field.getFieldType();
+        Type target = declared;
 
-        ParameterizedType listType = (ParameterizedType) field.getGenericType();
-        return (Class<? extends JpaModel>) listType.getActualTypeArguments()[0];
+        if (declared == Optional.class) {
+            target = field.getGenericType() instanceof ParameterizedType parameterized
+                ? parameterized.getActualTypeArguments()[0]
+                : null;
+        } else if (Collection.class.isAssignableFrom(declared)) {
+            target = declared.isAssignableFrom(ConcurrentList.class)
+                && field.getGenericType() instanceof ParameterizedType parameterized
+                ? parameterized.getActualTypeArguments()[0]
+                : null;
+        }
+
+        if (target instanceof Class<?> type && JpaModel.class.isAssignableFrom(type))
+            return type.asSubclass(JpaModel.class);
+
+        throw new JpaException(
+            "Field '%s' of '%s' names no model it can resolve to",
+            field.getName(),
+            field.getField().getDeclaringClass().getName()
+        );
     }
 
 }

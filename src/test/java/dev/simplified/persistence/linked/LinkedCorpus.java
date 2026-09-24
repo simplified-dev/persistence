@@ -5,19 +5,23 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.optional.LinkedStray;
+import dev.simplified.persistence.sibling.LinkedSibling;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.reflection.Reflection;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A writable source held in memory over the linked models, answering fresh instances on every read
- * the way a parsed document does.
+ * A writable source held in memory over the linked models, and over the {@link LinkedStray} and
+ * {@link LinkedSibling} rows kept outside their package, answering fresh instances on every read the
+ * way a parsed document does.
  *
  * <p>It counts reads per type, can be told to fail one type's read, to answer a parent row that
  * carries no id or to refuse a write, and can park a parent read behind a gate while it records how
@@ -39,6 +43,16 @@ public final class LinkedCorpus implements Source.Writable {
      * Child ids, keyed by grandchild id.
      */
     public final @NotNull ConcurrentMap<String, String> grandchildren = Concurrent.newLinkedMap();
+
+    /**
+     * Parent ids, empty where the row names none, keyed by stray id.
+     */
+    public final @NotNull ConcurrentMap<String, Optional<String>> strays = Concurrent.newLinkedMap();
+
+    /**
+     * Sibling ids, keyed by sibling id.
+     */
+    public final @NotNull ConcurrentMap<String, String> siblings = Concurrent.newLinkedMap();
 
     /**
      * The reads answered so far, per type.
@@ -124,6 +138,10 @@ public final class LinkedCorpus implements Source.Writable {
                 this.children.forEach((id, parentId) -> rows.add(child(id, parentId)));
             else if (type == LinkedGrandchild.class)
                 this.grandchildren.forEach((id, childId) -> rows.add(grandchild(id, childId)));
+            else if (type == LinkedStray.class)
+                this.strays.forEach((id, parentId) -> rows.add(stray(id, parentId.orElse(null))));
+            else if (type == LinkedSibling.class)
+                this.siblings.forEach((id, siblingId) -> rows.add(sibling(id, siblingId)));
 
             return (ConcurrentList<T>) rows;
         } catch (InterruptedException exception) {
@@ -146,6 +164,10 @@ public final class LinkedCorpus implements Source.Writable {
                 this.children.put(child.getId(), child.getParentId());
             else if (row instanceof LinkedGrandchild grandchild)
                 this.grandchildren.put(grandchild.getId(), grandchild.getChildId());
+            else if (row instanceof LinkedStray stray)
+                this.strays.put(stray.getId(), stray.getParentId());
+            else if (row instanceof LinkedSibling sibling)
+                this.siblings.put(sibling.getId(), sibling.getSiblingId());
         });
     }
 
@@ -189,6 +211,34 @@ public final class LinkedCorpus implements Source.Writable {
         grandchild.setId(id);
         grandchild.setChildId(childId);
         return grandchild;
+    }
+
+    /**
+     * Builds a stray row.
+     *
+     * @param id the stray's id
+     * @param parentId the id of the parent it links to, or {@code null} for none
+     * @return the row
+     */
+    public static @NotNull LinkedStray stray(@NotNull String id, @Nullable String parentId) {
+        LinkedStray stray = new LinkedStray();
+        stray.setId(id);
+        stray.setParentId(Optional.ofNullable(parentId));
+        return stray;
+    }
+
+    /**
+     * Builds a sibling row.
+     *
+     * @param id the sibling's id
+     * @param siblingId the id of the sibling it links to
+     * @return the row
+     */
+    public static @NotNull LinkedSibling sibling(@NotNull String id, @NotNull String siblingId) {
+        LinkedSibling sibling = new LinkedSibling();
+        sibling.setId(id);
+        sibling.setSiblingId(siblingId);
+        return sibling;
     }
 
 }

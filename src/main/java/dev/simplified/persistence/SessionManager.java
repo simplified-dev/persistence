@@ -56,7 +56,9 @@ public final class SessionManager {
      *
      * @param config the registered models and the source they are read from
      * @return the newly created and fully initialized session
-     * @throws JpaException if a registered type fails to hydrate
+     * @throws JpaException if a registered type declares a collection-valued, element-collection or
+     *         lazy association, or a link or association naming no model it can resolve to, which is
+     *         refused before anything is read; or if a registered type fails to read or link
      * @throws IllegalStateException if this manager holds no session and the JVM is already exiting
      */
     public @NotNull JpaSession connect(@NotNull JpaConfig config) {
@@ -149,7 +151,8 @@ public final class SessionManager {
      * @param request the write to apply
      * @param <M> the entity type
      * @throws JpaException if no active session registers the type, its source holds no write
-     *         instruction, or the write fails
+     *         instruction, an upserted row's link that is neither a list nor an {@link Optional}
+     *         carries no id or names no row, or the write fails
      */
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())

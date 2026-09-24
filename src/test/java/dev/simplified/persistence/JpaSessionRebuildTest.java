@@ -2,6 +2,7 @@ package dev.simplified.persistence;
 
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.cycle.CycleA;
 import dev.simplified.persistence.cycle.CycleB;
 import dev.simplified.persistence.exception.JpaException;
@@ -9,6 +10,8 @@ import dev.simplified.persistence.linked.LinkedChild;
 import dev.simplified.persistence.linked.LinkedCorpus;
 import dev.simplified.persistence.linked.LinkedGrandchild;
 import dev.simplified.persistence.linked.LinkedParent;
+import dev.simplified.persistence.optional.LinkedStray;
+import dev.simplified.persistence.sibling.LinkedSibling;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import org.jetbrains.annotations.NotNull;
@@ -20,17 +23,23 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static dev.simplified.persistence.linked.LinkedCorpus.child;
 import static dev.simplified.persistence.linked.LinkedCorpus.grandchild;
 import static dev.simplified.persistence.linked.LinkedCorpus.parent;
+import static dev.simplified.persistence.linked.LinkedCorpus.sibling;
+import static dev.simplified.persistence.linked.LinkedCorpus.stray;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -41,6 +50,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * rebuilds every type linking into the written one, a landed write whose rebuild fails returns having
  * published nothing and says so on every covered type, a write the origin refuses throws and rebuilds
  * nothing, rebuilds run one at a time, and a write that names no rows rebuilds nothing.
+ *
+ * <p>It also pins what an id naming no row does: a plain link fails the connect or the rebuild and
+ * refuses an upsert before it is written - so two new rows of different types naming each other
+ * cannot be written at all - while an {@link Optional} link holds empty.
  *
  * <p>The session-level cases run twice, with the models registered parent first and child first, so
  * none of them rests on the order discovery happens to answer.
@@ -173,6 +186,32 @@ class JpaSessionRebuildTest {
         @DisplayName("a landed write whose transitive dependent fails to rebuild returns and keeps the written type's previous generation too")
         void aFailingDependentPublishesNothing() {
             this.assertAFailedWriteKeepsEverything(() -> this.corpus.failing = LinkedGrandchild.class);
+        }
+
+        @Test
+        @DisplayName("a landed write whose rebuild meets a plain link naming no row returns, publishes nothing and reports the failure on every covered type")
+        void aDanglingLinkPublishesNothing() {
+            this.assertAFailedWriteKeepsEverything(() -> this.corpus.children.put("c2", "p9"));
+        }
+
+        @Test
+        @DisplayName("an upsert with a row whose plain link names no row is refused whole before it is written, and rebuilds nothing")
+        void anUpsertNamingAMissingRowIsRefused() {
+            Repository<LinkedChild> children = this.repository(LinkedChild.class);
+            LinkedChild child = children.getRows().getFirst();
+            int childReads = this.corpus.readsOf(LinkedChild.class);
+
+            JpaException thrown = assertThrows(
+                JpaException.class,
+                () -> this.session.write(WriteRequest.upsert(LinkedChild.class, List.of(child("c2", "p1"), child("c3", "p9"))))
+            );
+
+            assertThat(thrown.getMessage(), equalTo("Field 'parent' of '" + LinkedChild.class.getName() + "' names 'p9', which no row carries"));
+            assertThat(this.corpus.children.keySet(), contains("c1"));
+            assertThat(this.corpus.readsOf(LinkedChild.class), equalTo(childReads));
+            assertThat(children.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(children.getRows(), hasSize(1));
+            assertThat(children.getRows().getFirst(), sameInstance(child));
         }
 
         private void assertAFailedWriteKeepsEverything(@NotNull Runnable breakTheSource) {
@@ -336,13 +375,118 @@ class JpaSessionRebuildTest {
         }
     }
 
+    @Test
+    @DisplayName("two new rows of different types naming each other through plain links are refused, whichever is written first")
+    void aNewCycleAcrossTypesIsRefused() {
+        CycleCorpus corpus = new CycleCorpus();
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(JpaModel.resolveModels(CycleA.class), corpus));
+            CycleA a = new CycleA();
+            a.setId("a2");
+            a.setPartnerId("b2");
+            CycleB b = new CycleB();
+            b.setId("b2");
+            b.setPartnerId("a2");
+
+            JpaException aFirst = assertThrows(JpaException.class, () -> session.write(WriteRequest.upsert(CycleA.class, List.of(a))));
+            JpaException bFirst = assertThrows(JpaException.class, () -> session.write(WriteRequest.upsert(CycleB.class, List.of(b))));
+
+            assertThat(aFirst.getMessage(), equalTo("Field 'partner' of '" + CycleA.class.getName() + "' names 'b2', which no row carries"));
+            assertThat(bFirst.getMessage(), equalTo("Field 'partner' of '" + CycleB.class.getName() + "' names 'a2', which no row carries"));
+            assertThat(corpus.writes.get(), equalTo(0));
+            assertThat(corpus.reads.get(), equalTo(2));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("a plain link naming no row refuses the connect, naming the type and the id")
+    void aDanglingLinkRefusesTheConnect() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+        corpus.children.put("c1", "p1");
+        corpus.children.put("c2", "p9");
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaException thrown = assertThrows(
+                JpaException.class,
+                () -> manager.connect(new JpaConfig(models(LinkedParent.class, LinkedChild.class), corpus))
+            );
+
+            assertThat(thrown.getMessage(), equalTo("Field 'parent' of '" + LinkedChild.class.getName() + "' names 'p9', which no row carries"));
+            assertThat(manager.isActive(), is(false));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("an Optional link holds the row its id names, and empty for an absent id or one naming no row, on connect and on write")
+    void anOptionalLinkHoldsEmptyForAMiss() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+        corpus.strays.put("s1", Optional.of("p1"));
+        corpus.strays.put("s2", Optional.of("p9"));
+        corpus.strays.put("s3", Optional.empty());
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(models(LinkedParent.class, LinkedStray.class), corpus));
+            LinkedParent parent = session.getRepository(LinkedParent.class).orElseThrow().getRows().getFirst();
+            ConcurrentMap<String, LinkedStray> strays = JpaModel.keyed(LinkedStray.class, session.getRepository(LinkedStray.class).orElseThrow().getRows());
+
+            assertThat(strays.get("s1").getParent().orElseThrow(), sameInstance(parent));
+            assertThat(strays.get("s2").getParent(), equalTo(Optional.empty()));
+            assertThat(strays.get("s3").getParent(), equalTo(Optional.empty()));
+
+            session.write(WriteRequest.upsert(LinkedStray.class, List.of(stray("s4", "p9"))));
+
+            LinkedStray written = JpaModel.keyed(LinkedStray.class, session.getRepository(LinkedStray.class).orElseThrow().getRows()).get("s4");
+            assertThat(corpus.strays.get("s4"), equalTo(Optional.of("p9")));
+            assertThat(written.getParent(), equalTo(Optional.empty()));
+            assertThat(session.getRepository(LinkedStray.class).orElseThrow().getState(), equalTo(HydrationState.CURRENT));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("an upsert linking to a row the same request adds is written, and one linking to a row nothing holds is refused")
+    void anUpsertLinksAgainstItsOwnRows() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.siblings.put("s1", "s1");
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(models(LinkedSibling.class), corpus));
+
+            session.write(WriteRequest.upsert(LinkedSibling.class, List.of(sibling("s2", "s3"), sibling("s3", "s2"))));
+
+            Repository<LinkedSibling> siblings = session.getRepository(LinkedSibling.class).orElseThrow();
+            ConcurrentMap<String, LinkedSibling> held = JpaModel.keyed(LinkedSibling.class, siblings.getRows());
+            assertThat(siblings.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(held.get("s2").getSibling(), sameInstance(held.get("s3")));
+            assertThat(held.get("s3").getSibling(), sameInstance(held.get("s2")));
+
+            assertThrows(JpaException.class, () -> session.write(WriteRequest.upsert(LinkedSibling.class, List.of(sibling("s4", "s5")))));
+            assertThat(corpus.siblings.containsKey("s4"), is(false));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
     /**
      * A writable source over one {@link CycleA} and one {@link CycleB} naming each other, answering
-     * fresh instances on every read.
+     * fresh instances on every read and counting the writes that reach it without applying them.
      */
     private static final class CycleCorpus implements Source.Writable {
 
         private final @NotNull AtomicInteger reads = new AtomicInteger();
+        private final @NotNull AtomicInteger writes = new AtomicInteger();
 
         @Override
         @SuppressWarnings("unchecked")
@@ -364,6 +508,7 @@ class JpaSessionRebuildTest {
 
         @Override
         public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
+            this.writes.incrementAndGet();
         }
 
     }
