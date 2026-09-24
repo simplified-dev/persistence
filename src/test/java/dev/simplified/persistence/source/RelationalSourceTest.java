@@ -47,8 +47,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * An opened database: the settings its builder carries reaching Hibernate, what a failed open leaves
- * behind, a close that leaves every other open database caching, and a close that can be repeated and
- * leaves nothing the JVM holds.
+ * behind, a close that leaves every other open database caching, the shutdown hook that holds an open
+ * one, and a close that can be repeated and leaves nothing the JVM holds.
  */
 @Tag("slow")
 class RelationalSourceTest {
@@ -112,7 +112,7 @@ class RelationalSourceTest {
 
     @Test
     @DisplayName("an open that fails part way leaves no region in the provider's default manager")
-    void aFailedOpenReleasesWhatItAcquired() {
+    void aFailedOpenLeavesNoRegionInTheDefaultManager() {
         assertThrows(
             RuntimeException.class,
             () -> H2MemoryDriver.named("relational_source_refused")
@@ -179,15 +179,49 @@ class RelationalSourceTest {
     void aClosedDatabaseIsCollected() throws InterruptedException {
         ReferenceQueue<RelationalSource> queue = new ReferenceQueue<>();
         WeakReference<RelationalSource> reference = closedDetached(queue);
+
+        assertSame(reference, collected(queue, 50), "A closed database is still reachable");
+    }
+
+    @Test
+    @DisplayName("an open database stays reachable through its shutdown hook")
+    void anOpenDatabaseIsHeldByItsHook() throws InterruptedException {
+        ReferenceQueue<RelationalSource> queue = new ReferenceQueue<>();
+        WeakReference<RelationalSource> reference = openDetached(queue);
+
+        try {
+            // Nothing but the hook holds the database, so a collection that reaches it means the
+            // JVM would not close it at exit.
+            assertThat("An open database was collected", collected(queue, 10), nullValue());
+            assertThat(reference.get(), notNullValue());
+        } finally {
+            RelationalSource database = reference.get();
+
+            if (database != null)
+                database.close();
+        }
+    }
+
+    /**
+     * Runs collections until a reference enqueues, each followed by a 100ms wait for it.
+     *
+     * @param queue the queue a collected reference enqueues on
+     * @param rounds the most collections to run
+     * @return the reference that enqueued, or {@code null} when none did
+     * @throws InterruptedException if a wait is interrupted
+     */
+    private static @Nullable Reference<? extends RelationalSource> collected(
+        @NotNull ReferenceQueue<RelationalSource> queue,
+        int rounds
+    ) throws InterruptedException {
         Reference<? extends RelationalSource> collected = null;
 
-        // At most 50 collections, each followed by a 100ms wait for the reference to enqueue
-        for (int attempt = 0; attempt < 50 && collected == null; attempt++) {
+        for (int attempt = 0; attempt < rounds && collected == null; attempt++) {
             System.gc();
             collected = queue.remove(100);
         }
 
-        assertSame(reference, collected, "A closed database is still reachable");
+        return collected;
     }
 
     /**
@@ -201,6 +235,17 @@ class RelationalSourceTest {
         RelationalSource database = openParents("relational_source_collected", true);
         database.close();
         return new WeakReference<>(database, queue);
+    }
+
+    /**
+     * Opens a database and leaves it open, handing back only a weak reference so no strong one
+     * outlives this frame.
+     *
+     * @param queue the queue the reference enqueues on once the database is collected
+     * @return a weak reference to the open database
+     */
+    private static @NotNull WeakReference<RelationalSource> openDetached(@NotNull ReferenceQueue<RelationalSource> queue) {
+        return new WeakReference<>(openParents("relational_source_held", true), queue);
     }
 
     private static @NotNull RelationalSource openParents(@NotNull String name, boolean caching) {

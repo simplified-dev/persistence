@@ -17,6 +17,7 @@ import dev.simplified.persistence.unfollowable.WildcardLinked;
 import dev.simplified.persistence.unmapped.ContractRow;
 import dev.simplified.reflection.Reflection;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,6 +37,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -43,8 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * The registry's routing of lookups and writes across the sessions it holds - here a read-only
  * session registered first and a writable one after it, the layout a consumer with one corpus and one
- * database of its own ends up with - its reuse once it has been shut down to empty, and the types it
- * refuses to connect before anything is read.
+ * database of its own ends up with - its reuse once it has been shut down to empty, the shutdown hook
+ * that holds it while it holds a session, and the types it refuses to connect before anything is read.
  */
 class SessionManagerTest {
 
@@ -157,15 +160,27 @@ class SessionManagerTest {
     void aManagerShutDownToEmptyIsCollected() throws InterruptedException {
         ReferenceQueue<SessionManager> queue = new ReferenceQueue<>();
         WeakReference<SessionManager> reference = shutDownDetached(queue);
-        Reference<? extends SessionManager> collected = null;
 
-        // At most 50 collections, each followed by a 100ms wait for the reference to enqueue
-        for (int attempt = 0; attempt < 50 && collected == null; attempt++) {
-            System.gc();
-            collected = queue.remove(100);
+        assertSame(reference, collected(queue, 50), "A manager shut down to empty is still reachable");
+    }
+
+    @Test
+    @DisplayName("a manager holding a session stays reachable through its shutdown hook")
+    void aManagerHoldingASessionIsHeldByItsHook() throws InterruptedException {
+        ReferenceQueue<SessionManager> queue = new ReferenceQueue<>();
+        WeakReference<SessionManager> reference = connectedDetached(queue);
+
+        try {
+            // Nothing but the hook holds the manager, so a collection that reaches it means the JVM
+            // would not shut its session down at exit.
+            assertThat("A manager holding a session was collected", collected(queue, 10), nullValue());
+            assertThat(reference.get(), notNullValue());
+        } finally {
+            SessionManager manager = reference.get();
+
+            if (manager != null)
+                manager.shutdown();
         }
-
-        assertSame(reference, collected, "A manager shut down to empty is still reachable");
     }
 
     @Test
@@ -275,6 +290,46 @@ class SessionManagerTest {
         assertThat(manager.isActive(), is(false));
 
         return new WeakReference<>(manager, queue);
+    }
+
+    /**
+     * Connects a session on a new manager and leaves it connected, handing back only a weak
+     * reference so no strong one outlives this frame.
+     *
+     * @param queue the queue the reference enqueues on once the manager is collected
+     * @return a weak reference to the manager holding the session
+     */
+    private static @NotNull WeakReference<SessionManager> connectedDetached(@NotNull ReferenceQueue<SessionManager> queue) {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+
+        SessionManager manager = new SessionManager();
+        manager.connect(new JpaConfig(JpaModel.resolveModels(LinkedParent.class), corpus));
+        assertThat(manager.isActive(), is(true));
+
+        return new WeakReference<>(manager, queue);
+    }
+
+    /**
+     * Runs collections until a reference enqueues, each followed by a 100ms wait for it.
+     *
+     * @param queue the queue a collected reference enqueues on
+     * @param rounds the most collections to run
+     * @return the reference that enqueued, or {@code null} when none did
+     * @throws InterruptedException if a wait is interrupted
+     */
+    private static @Nullable Reference<? extends SessionManager> collected(
+        @NotNull ReferenceQueue<SessionManager> queue,
+        int rounds
+    ) throws InterruptedException {
+        Reference<? extends SessionManager> collected = null;
+
+        for (int attempt = 0; attempt < rounds && collected == null; attempt++) {
+            System.gc();
+            collected = queue.remove(100);
+        }
+
+        return collected;
     }
 
 }

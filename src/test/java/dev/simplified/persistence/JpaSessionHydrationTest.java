@@ -89,7 +89,10 @@ class JpaSessionHydrationTest {
     }
 
     /**
-     * Answers the name of the one parent row a session holds.
+     * Answers the name of the one parent row a session holds, failing when it holds any other count.
+     *
+     * @param session the session holding the parent type
+     * @return the name of its one held parent row
      */
     private static @NotNull String heldName(@NotNull JpaSession session) {
         ConcurrentList<TestParentModel> held = session.getRepository(TestParentModel.class).orElseThrow().findAll();
