@@ -171,16 +171,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN** - narrowed, not closed
 
-> #### Two drivers name the wrong defaults
-> `SqlServerDriver` renders the `jdbc:microsoft:sqlserver` url of the retired SQL Server 2000 JDBC
-> driver, which the current Microsoft driver does not accept, and `OracleThinDriver` defaults to port
-> 1571 rather than Oracle's 1521. No test names either driver.
->
-> - Affected: `src/main/java/dev/simplified/persistence/driver/SqlServerDriver.java:46`;
->   `src/main/java/dev/simplified/persistence/driver/OracleThinDriver.java:16`
-> - Type: **BUG**
-> - Status: **OPEN**
-
 > #### A shut-down session with a cadence stays reachable until the process exits
 > `Scheduler` registers a JVM shutdown hook it never removes, and its `shutdown()` cancels its tasks
 > without dropping them. A session's tick is a task holding the session, so a session that declared a

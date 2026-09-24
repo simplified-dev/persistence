@@ -16,7 +16,7 @@ public final class SqlServerDriver implements JpaDriver {
     private static final int DEFAULT_PORT = 1433;
 
     private final @NotNull String dialectClass = "org.hibernate.dialect.SQLServerDialect";
-    private final @NotNull String classPath = "com.microsoft.jdbc.sqlserver.SQLServerDriver";
+    private final @NotNull String classPath = "com.microsoft.sqlserver.jdbc.SQLServerDriver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.EXTERNAL;
 
     private SqlServerDriver() {}
@@ -43,7 +43,7 @@ public final class SqlServerDriver implements JpaDriver {
     public static @NotNull RelationalSource.Authenticating at(@NotNull String host, int port, @NotNull String schema) {
         return RelationalSource.authenticating(
             new SqlServerDriver(),
-            String.format("jdbc:microsoft:sqlserver://%s:%s;DatabaseName=%s", host, port, schema)
+            String.format("jdbc:sqlserver://%s:%s;databaseName=%s", host, port, schema)
         );
     }
 

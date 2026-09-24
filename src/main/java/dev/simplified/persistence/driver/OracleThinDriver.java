@@ -13,7 +13,7 @@ public final class OracleThinDriver implements JpaDriver {
     /**
      * The port an Oracle listener answers on unless told otherwise.
      */
-    private static final int DEFAULT_PORT = 1571;
+    private static final int DEFAULT_PORT = 1521;
 
     private final @NotNull String dialectClass = "org.hibernate.dialect.OracleDialect";
     private final @NotNull String classPath = "oracle.jdbc.driver.OracleDriver";
