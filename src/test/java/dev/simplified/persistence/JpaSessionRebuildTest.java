@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -250,7 +251,7 @@ class JpaSessionRebuildTest {
         corpus.children.put("c1", "p1");
         LinkedParent parent = parent("p1", "one");
 
-        JpaRepository<LinkedChild> repository = new JpaRepository<>(LinkedChild.class);
+        JpaRepository<LinkedChild> repository = new JpaRepository<>(LinkedChild.class, Duration.ZERO);
         ConcurrentList<LinkedChild> read = repository.hydrate(corpus);
 
         assertThat(read, hasSize(1));
@@ -271,7 +272,7 @@ class JpaSessionRebuildTest {
     @Test
     @DisplayName("a failure with nothing published is FAILED and serves nothing; with a generation it is DEGRADED and serves it")
     void failureStatesFollowWhatIsPublished() {
-        JpaRepository<LinkedParent> repository = new JpaRepository<>(LinkedParent.class);
+        JpaRepository<LinkedParent> repository = new JpaRepository<>(LinkedParent.class, Duration.ZERO);
 
         repository.fail();
         assertThat(repository.getState(), equalTo(HydrationState.FAILED));

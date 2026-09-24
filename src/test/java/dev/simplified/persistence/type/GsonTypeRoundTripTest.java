@@ -65,7 +65,7 @@ class GsonTypeRoundTripTest {
         database = H2MemoryDriver.named("gson_type_round_trip")
             .isUsing2ndLevelCache(false)
             .isUsingQueryCache(false)
-            .withDefaultCacheExpiryMs(0)
+            .withCacheExpiryMs(0)
             .open(JpaModel.resolveModels(GsonFixtureModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
     }
 
@@ -535,7 +535,7 @@ class GsonTypeRoundTripTest {
             RelationalSource floating = H2MemoryDriver.named("floating_optional")
                 .isUsing2ndLevelCache(false)
                 .isUsingQueryCache(false)
-                .withDefaultCacheExpiryMs(0)
+                .withCacheExpiryMs(0)
                 .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
             try {

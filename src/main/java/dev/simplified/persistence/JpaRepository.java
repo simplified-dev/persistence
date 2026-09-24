@@ -1,6 +1,5 @@
 package dev.simplified.persistence;
 
-import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
@@ -52,10 +51,11 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     /**
      * How long to wait between rebuilds, or {@link Duration#ZERO} for no background cadence.
      */
-    @Getter(AccessLevel.PACKAGE) private final @NotNull Duration hydrationInterval;
+    private final @NotNull Duration hydrationInterval;
 
     /**
-     * How long a generation may stand before it reports {@link HydrationState#STALE}.
+     * How long a generation may stand before it reports {@link HydrationState#STALE}, or
+     * {@link Duration#ZERO} when it never does.
      */
     private final @NotNull Duration stalenessThreshold;
 
@@ -65,9 +65,9 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     private volatile @NotNull ConcurrentList<T> rows = Concurrent.newUnmodifiableList();
 
     /**
-     * The point this repository's generation has reached.
+     * The point the last hydration step left this repository's generation at.
      */
-    @Getter private volatile @NotNull HydrationState state = HydrationState.UNHYDRATED;
+    private volatile @NotNull HydrationState state = HydrationState.UNHYDRATED;
 
     /**
      * When the held generation was published, {@link Instant#EPOCH} before the first.
@@ -80,18 +80,41 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      * <p>No I/O runs here. The generation is built when the session reaches this type, so
      * a repository exists and answers {@link HydrationState#UNHYDRATED} before it holds anything.
      *
+     * <p>A type declaring a cadence and no {@link Hydration#stale()} of its own reports
+     * {@link HydrationState#STALE} once its generation has stood for its cadence plus two ticks. A
+     * due type is picked up at the first tick after its cadence elapses, which comes at most one tick
+     * and one rebuild later, so a generation outlives the threshold only when the rebuilds take longer
+     * than a tick or the ticks stop.
+     *
      * @param type the entity class
+     * @param tick the interval the owning session ticks at, {@link Duration#ZERO} for no cadence
      */
-    JpaRepository(@NotNull Class<T> type) {
+    JpaRepository(@NotNull Class<T> type, @NotNull Duration tick) {
         this.type = type;
+        this.hydrationInterval = intervalOf(type);
 
         Hydration hydration = type.getAnnotation(Hydration.class);
-        this.hydrationInterval = hydration == null
+
+        if (hydration != null && hydration.stale() > 0)
+            this.stalenessThreshold = Duration.of(hydration.stale(), hydration.unit().toChronoUnit());
+        else if (this.hydrationInterval.isZero())
+            this.stalenessThreshold = Duration.ZERO;
+        else
+            this.stalenessThreshold = this.hydrationInterval.plus(tick.multipliedBy(2));
+    }
+
+    /**
+     * Reads the background cadence a type declares through {@link Hydration}.
+     *
+     * @param type the entity class to read
+     * @return how long the type waits between rebuilds, {@link Duration#ZERO} for no cadence
+     */
+    static @NotNull Duration intervalOf(@NotNull Class<?> type) {
+        Hydration hydration = type.getAnnotation(Hydration.class);
+
+        return hydration == null
             ? Duration.ZERO
             : Duration.of(hydration.every(), hydration.unit().toChronoUnit());
-        this.stalenessThreshold = hydration == null || hydration.stale() <= 0
-            ? this.hydrationInterval.multipliedBy(2)
-            : Duration.of(hydration.stale(), hydration.unit().toChronoUnit());
     }
 
     /**
@@ -112,6 +135,19 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
     boolean isPastStaleness() {
         return !this.stalenessThreshold.isZero()
             && Duration.between(this.hydratedAt, Instant.now()).compareTo(this.stalenessThreshold) >= 0;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A generation the last rebuild published answers {@link HydrationState#STALE} once it has
+     * stood past its staleness threshold, so a cadence that has stalled or stopped shows on read
+     * without a tick having to run.
+     */
+    @Override
+    public @NotNull HydrationState getState() {
+        HydrationState state = this.state;
+        return state == HydrationState.CURRENT && this.isPastStaleness() ? HydrationState.STALE : state;
     }
 
     /** {@inheritDoc} */
@@ -192,14 +228,6 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
      */
     void fail() {
         this.state = this.hydratedAt.equals(Instant.EPOCH) ? HydrationState.FAILED : HydrationState.DEGRADED;
-    }
-
-    /**
-     * Marks the held generation as past its freshness window.
-     */
-    void markStale() {
-        if (this.state == HydrationState.CURRENT)
-            this.state = HydrationState.STALE;
     }
 
     /**

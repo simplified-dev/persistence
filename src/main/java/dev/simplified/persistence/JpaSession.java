@@ -1,6 +1,7 @@
 package dev.simplified.persistence;
 
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.Log;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
@@ -15,10 +16,12 @@ import jakarta.persistence.OneToOne;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -44,8 +47,9 @@ import java.util.stream.Stream;
  * <p>Typical lifecycle managed by {@link SessionManager}:</p>
  * <ol>
  *     <li><b>Construction</b> - no I/O</li>
- *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per registered type and
- *         hydrates every one of them</li>
+ *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per registered type, hydrates
+ *         every one of them, and builds the scheduler that ticks when some type declares a
+ *         {@link Hydration} cadence</li>
  *     <li>{@link #shutdown()} - clears repositories and shuts down the scheduler, if one was built</li>
  * </ol>
  *
@@ -56,6 +60,7 @@ import java.util.stream.Stream;
  * @see JpaRepository
  * @see SessionManager
  */
+@Log
 public final class JpaSession {
 
     /**
@@ -97,29 +102,31 @@ public final class JpaSession {
     /**
      * Creates a {@link JpaRepository} for each registered model and performs the initial data load.
      *
-     * <p>Called once, by {@link SessionManager#connect(JpaConfig)}.
+     * <p>Once every type holds a generation, a session with a type declaring a {@link Hydration}
+     * cadence builds its scheduler and ticks at the shortest cadence declared. Called once, by
+     * {@link SessionManager#connect(JpaConfig)}.
      *
      * @throws JpaException if any registered type fails to hydrate
      */
     void cacheRepositories() {
-        for (Class<JpaModel> model : this.config.models())
-            this.repositories.put(model, new JpaRepository<>(model));
-
-        this.hydrate(this.config.models());
-
-        // A type asks for a cadence through @Hydration; one that declares none is hydrated here
-        // and left alone. The tick runs at the shortest declared interval and rebuilds only what
-        // has come due.
-        long minIntervalMs = this.repositories.values()
+        // A type asks for a cadence through @Hydration. The tick runs at the shortest declared
+        // interval and rebuilds only what has come due, with every type linking into it, and each
+        // repository measures its default stale threshold in ticks.
+        long tickMs = this.config.models()
             .stream()
-            .mapToLong(repository -> repository.getHydrationInterval().toMillis())
+            .mapToLong(model -> JpaRepository.intervalOf(model).toMillis())
             .filter(ms -> ms > 0)
             .min()
             .orElse(0);
 
-        if (minIntervalMs > 0) {
+        for (Class<JpaModel> model : this.config.models())
+            this.repositories.put(model, new JpaRepository<>(model, Duration.ofMillis(tickMs)));
+
+        this.hydrate(this.config.models());
+
+        if (tickMs > 0) {
             this.scheduler = new Scheduler();
-            this.scheduler.scheduleAsync(this::hydrateDue, minIntervalMs, minIntervalMs, TimeUnit.MILLISECONDS);
+            this.scheduler.scheduleAsync(this::hydrateDue, tickMs, tickMs, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -134,25 +141,14 @@ public final class JpaSession {
      * <p>Rebuilds run one at a time, so a write and a due tick never interleave their passes, and a
      * shutdown waits for the rebuild in flight. A session that has been shut down rebuilds nothing.
      *
-     * @param asked the registered types a write or a tick asks to rebuild
+     * @param asked the registered types the connect, a write or a tick asks to rebuild
      * @throws JpaException if any covered type fails to read or link
      */
     private synchronized void hydrate(@NotNull ConcurrentList<Class<JpaModel>> asked) {
         if (!this.active)
             return;
 
-        ConcurrentSet<Class<JpaModel>> covered = Concurrent.newSet();
-
-        asked.forEach(type -> {
-            covered.add(type);
-            covered.addAll(this.dependents.getOrDefault(type, Concurrent.newSet()));
-        });
-
-        ConcurrentList<Class<JpaModel>> types = this.config.models()
-            .stream()
-            .filter(covered::contains)
-            .collect(Concurrent.toList());
-
+        ConcurrentList<Class<JpaModel>> types = this.covering(asked);
         ConcurrentMap<Class<JpaModel>, ConcurrentList<JpaModel>> pass = Concurrent.newMap();
         ConcurrentMap<Class<? extends JpaModel>, ConcurrentMap<String, ? extends JpaModel>> keyed = Concurrent.newMap();
 
@@ -169,6 +165,27 @@ public final class JpaSession {
 
         for (Class<JpaModel> type : types)
             this.repositories.get(type).hold(pass.get(type));
+    }
+
+    /**
+     * Lists the types a rebuild of the given ones covers: each of them and every registered type
+     * linking into one of them.
+     *
+     * @param asked the registered types asked to rebuild
+     * @return the covered types, in registration order
+     */
+    private @NotNull ConcurrentList<Class<JpaModel>> covering(@NotNull ConcurrentList<Class<JpaModel>> asked) {
+        ConcurrentSet<Class<JpaModel>> covered = Concurrent.newSet();
+
+        asked.forEach(type -> {
+            covered.add(type);
+            covered.addAll(this.dependents.getOrDefault(type, Concurrent.newSet()));
+        });
+
+        return this.config.models()
+            .stream()
+            .filter(covered::contains)
+            .collect(Concurrent.toList());
     }
 
     /**
@@ -194,25 +211,33 @@ public final class JpaSession {
 
     /**
      * Rebuilds every type whose {@link Hydration} cadence has come due, together with every type
-     * linking into them, and marks the rest stale when they have stood too long.
+     * linking into them.
+     *
+     * <p>A rebuild that fails is logged with the types it covered. Each of them is left
+     * {@link HydrationState#DEGRADED} on its previous generation and is due again at the next tick, so
+     * the cadence outlives the failure. An {@link Error} is not caught, and ends the cadence.
      */
     private synchronized void hydrateDue() {
         if (!this.active)
             return;
 
-        ConcurrentList<Class<JpaModel>> due = Concurrent.newList();
+        ConcurrentList<Class<JpaModel>> due = this.config.models()
+            .stream()
+            .filter(model -> this.repositories.get(model).isDue())
+            .collect(Concurrent.toList());
 
-        for (Class<JpaModel> model : this.config.models()) {
-            JpaRepository<JpaModel> repository = this.repositories.get(model);
+        if (due.isEmpty())
+            return;
 
-            if (repository.isDue())
-                due.add(model);
-            else if (repository.isPastStaleness())
-                repository.markStale();
-        }
-
-        if (due.notEmpty())
+        try {
             this.hydrate(due);
+        } catch (RuntimeException exception) {
+            log.error(
+                "A background rebuild failed and left {} on their previous generation",
+                this.covering(due).stream().map(Class::getName).collect(Collectors.joining(", ")),
+                exception
+            );
+        }
     }
 
     /**
@@ -275,9 +300,10 @@ public final class JpaSession {
     /**
      * Performs an orderly shutdown of this session.
      *
-     * <p>Shuts down the scheduler, if one was built, then waits for any rebuild in flight before it
-     * marks the session inactive and clears all repositories. The source is not closed: a database
-     * stays open for whoever opened it.</p>
+     * <p>Shuts down the scheduler, if one was built, which stops the tick and drops the scheduler's JVM
+     * shutdown hook, so nothing the JVM holds keeps this session reachable. It then waits for any
+     * rebuild in flight before it marks the session inactive and clears all repositories. The source
+     * is not closed: a database stays open for whoever opened it.</p>
      *
      * <p>After shutdown, {@link #getRepository(Class)} answers empty for every type. The session
      * object should be discarded.</p>

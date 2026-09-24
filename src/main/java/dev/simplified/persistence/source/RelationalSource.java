@@ -7,7 +7,6 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.CacheMissingStrategy;
-import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.driver.JpaDriver;
@@ -83,13 +82,6 @@ import java.util.function.Function;
  */
 public final class RelationalSource implements Source.Writable, AutoCloseable {
 
-    /**
-     * JCache TTL is set to this multiple of the refresh interval as a safety net. Under normal
-     * operation the scheduler refreshes proactively; the JCache TTL only fires if the scheduler
-     * misses multiple cycles.
-     */
-    private static final int CACHE_TTL_MULTIPLIER = 2;
-
     private static final @NotNull String TIMESTAMPS_REGION = "default-update-timestamps-region";
     private static final @NotNull String QUERY_RESULTS_REGION = "default-query-results-region";
 
@@ -114,7 +106,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     private final @NotNull CacheConcurrencyStrategy cacheConcurrencyStrategy;
     private final @NotNull CacheMissingStrategy missingCacheStrategy;
     private final long queryResultsTTL;
-    private final long defaultCacheExpiryMs;
+    private final long cacheExpiryMs;
 
     /**
      * The types it maps.
@@ -161,7 +153,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         this.cacheConcurrencyStrategy = builder.cacheConcurrencyStrategy;
         this.missingCacheStrategy = builder.missingCacheStrategy;
         this.queryResultsTTL = builder.queryResultsTTL;
-        this.defaultCacheExpiryMs = builder.defaultCacheExpiryMs;
+        this.cacheExpiryMs = builder.cacheExpiryMs;
         this.models = models;
 
         this.applyLogLevel(logLevel);
@@ -468,17 +460,19 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     }
 
     /**
-     * Registers the mapped entity classes, each with its own cache region.
+     * Registers the mapped entity classes, each with a cache region of its own, and every region
+     * with the one TTL this database was opened with.
      *
      * @return the metadata sources naming every mapped class
      */
     private @NotNull MetadataSources createMetadataSources() {
         MetadataSources metadataSources = new MetadataSources(this.serviceRegistry);
+        Duration life = this.cacheExpiryMs <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.MILLISECONDS, this.cacheExpiryMs);
 
-        this.models
-            .stream()
-            .map(this::buildCacheConfiguration)
-            .forEach(metadataSources::addAnnotatedClass);
+        for (Class<JpaModel> model : this.models) {
+            this.buildCacheConfiguration(model.getName(), life);
+            metadataSources.addAnnotatedClass(model);
+        }
 
         return metadataSources;
     }
@@ -512,25 +506,6 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
             adjustColumnLength(metadata);
 
         return metadata;
-    }
-
-    /**
-     * Creates a JCache configuration for one type, with the TTL its {@link Hydration} cadence or the
-     * database's default asks for, multiplied as a safety net.
-     *
-     * @param type the mapped type
-     * @return the same type, so the call can sit in a stream of them
-     */
-    private @NotNull Class<JpaModel> buildCacheConfiguration(@NotNull Class<JpaModel> type) {
-        Hydration hydration = type.getAnnotation(Hydration.class);
-        long expiryMs = hydration != null && hydration.every() > 0
-            ? hydration.unit().toMillis(hydration.every())
-            : this.defaultCacheExpiryMs;
-
-        long jcacheTtlMs = expiryMs <= 0 ? 0 : expiryMs * CACHE_TTL_MULTIPLIER;
-        Duration duration = jcacheTtlMs <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.MILLISECONDS, jcacheTtlMs);
-        this.buildCacheConfiguration(type.getName(), duration);
-        return type;
     }
 
     /**
@@ -618,8 +593,8 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      * Names what Hibernate caches over a database, and opens it.
      *
      * <p>A builder only exists where a database does, so the defaults are the ones a database wants:
-     * both caches on, read-write concurrency, a missing region created with a warning, and a
-     * thirty-second query result life.
+     * both caches on, read-write concurrency, a missing region created with a warning, a
+     * thirty-second query result life and a sixty-second entity region life.
      */
     public static final class Builder {
 
@@ -633,7 +608,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         private @NotNull CacheConcurrencyStrategy cacheConcurrencyStrategy = CacheConcurrencyStrategy.READ_WRITE;
         private @NotNull CacheMissingStrategy missingCacheStrategy = CacheMissingStrategy.CREATE_WARN;
         private long queryResultsTTL = 30;
-        private long defaultCacheExpiryMs = 30_000;
+        private long cacheExpiryMs = 60_000;
 
         private Builder(@NotNull JpaDriver driver, @NotNull String url) {
             this.driver = driver;
@@ -689,10 +664,10 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         }
 
         /**
-         * Sets the default JCache TTL in milliseconds for types declaring no hydration cadence.
+         * Sets the JCache TTL in milliseconds of every mapped type's region, or {@code 0} for none.
          */
-        public @NotNull Builder withDefaultCacheExpiryMs(long defaultCacheExpiryMs) {
-            this.defaultCacheExpiryMs = defaultCacheExpiryMs;
+        public @NotNull Builder withCacheExpiryMs(long cacheExpiryMs) {
+            this.cacheExpiryMs = cacheExpiryMs;
             return this;
         }
 

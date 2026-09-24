@@ -41,7 +41,7 @@ class JpaCacheTest {
         this.sessionManager = new SessionManager();
         this.database = H2MemoryDriver.named("jpa_cache_test")
             .isUsingStatistics()
-            .withDefaultCacheExpiryMs(2000)
+            .withCacheExpiryMs(2000)
             .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
         this.session = this.sessionManager.connect(new JpaConfig(models, this.database));
     }
@@ -147,8 +147,8 @@ class JpaCacheTest {
     void cacheMissAfterExpiry() throws Exception {
         this.insertParentAndChild(1, "parent1", 10, "child1");
 
-        // 4s JCache TTL, from the 2x multiplier on a 2s default expiry.
-        Thread.sleep(5000);
+        // 2s JCache TTL.
+        Thread.sleep(3000);
 
         Statistics stats = this.statistics();
         stats.clear();

@@ -28,28 +28,34 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `WriteEnvelope`. persistence, github, skyblock, hypixel, `SkyBlock-Simplified/api` and data are all
 > unpushed on `feat/indexing`.
 >
+> persistence also pins `scheduler` at `21570df`, its `origin/master`, where `Scheduler.shutdown()`
+> leaves its JVM shutdown hook registered and so keeps a shut-down session with a `@Hydration` cadence
+> reachable until exit. The hook is removed at `4c401ab`, on `scheduler`'s unpushed
+> `fix/shutdown-hook`, so a shut-down session is released only where that commit is substituted.
+>
 > Everything therefore verifies only through the root composite at `W:/Workspace/Java/Simplified`,
-> which substitutes the local projects - `utils` at its working tree, `5d14f56`, among them, so the
-> composite masks persistence's `utils` pin as well:
+> which substitutes the local projects - `utils` at its working tree, `5d14f56`, and `scheduler` at
+> `4c401ab` among them, so the composite masks persistence's `utils` and `scheduler` pins as well:
 >
 > ```
-> ./gradlew :Simplified-Dev:persistence:test :Simplified-Api:github:test \
->   :Simplified-Api:skyblock:test :Simplified-Api:hypixel:test \
+> ./gradlew :Simplified-Dev:scheduler:test :Simplified-Dev:persistence:test \
+>   :Simplified-Api:github:test :Simplified-Api:skyblock:test :Simplified-Api:hypixel:test \
 >   :SkyBlock-Simplified:api:test :SkyBlock-Simplified:data:test
 > ```
 >
-> Closing it is a sequence on a third-party service, not a line in a build file: build `collections`
-> and move persistence's pins; push and build persistence; move `SkyBlock-Simplified/api`'s pins,
-> merge it to `master` and build it; push and build github; move skyblock's pins, push and build it;
-> then move the hypixel and data pins - confirming at each step that the module resolves the published
-> surface rather than the composite's substitution masking it.
+> Closing it is a sequence on a third-party service, not a line in a build file: build `collections`,
+> merge and build `scheduler`, and move persistence's pins; push and build persistence; move
+> `SkyBlock-Simplified/api`'s pins, merge it to `master` and build it; push and build github; move
+> skyblock's pins, push and build it; then move the hypixel and data pins - confirming at each step
+> that the module resolves the published surface rather than the composite's substitution masking it.
 >
-> - Affected: `build.gradle.kts:21`, `:22`; `Simplified-Api/github/build.gradle.kts:37`;
+> - Affected: `build.gradle.kts:21`, `:22`, `:25`; `Simplified-Api/github/build.gradle.kts:37`;
 >   `Simplified-Api/skyblock/build.gradle.kts:35`, `:38`, `:39`, `:42`;
 >   `Simplified-Api/hypixel/build.gradle.kts:35`, `:38`, `:39`, `:42`;
 >   `SkyBlock-Simplified/api/build.gradle.kts:38`, `:39`, `:45`;
 >   `SkyBlock-Simplified/data/build.gradle.kts:67`, `:71`, `:76`, `:78`, `:79`;
->   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`
+>   `Simplified-Dev/collections` branch `feat/indexing` at `58aaa00`;
+>   `Simplified-Dev/scheduler` branch `fix/shutdown-hook` at `4c401ab`
 > - Type: **GAP**
 > - Status: **OPEN** - needs pushes and JitPack builds in dependency order, `collections` first
 
@@ -66,37 +72,10 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > the documents spell the key `stone`; bound, two reforge stones name no item. `02-flow.md` §5.4 says
 > the type should fail; the spine reserved the decision and it is still reserved.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:213` - `resolveLinks`, which
->   assigns the miss at `:239`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:241` - `resolveLinks`, which
+>   assigns the miss at `:267`
 > - Type: **RISK**
 > - Status: **OPEN** - the policy is undecided, per spine §12
-
-> #### `@Hydration(blocking = false)` changes nothing
-> `01-contracts.md` §6 gives `blocking()` one job - whether `SessionManager.connect(...)` waits for a
-> type's first generation before returning - and gives a reader a fixed contract: block on
-> `UNHYDRATED` and `HYDRATING`, throw on `FAILED`, return on everything else.
->
-> `connect` now hydrates every registered type before it registers the session, and it is the only
-> thing that builds one, so no caller ever reaches a repository in `UNHYDRATED` or `HYDRATING`, and a
-> rebuild publishes nothing until its links resolve. That makes every type behave as
-> `blocking = true`. The element is still declared and still read by nothing, so `blocking = false` -
-> a type whose readers would rather wait on first access than hold up the connect - is unbuilt, as is
-> the prior pack's O2, first hydration off the calling thread.
->
-> The reader half is unbuilt too, and out of reach. `HydrationState` states the contract - and a
-> session-level view that is the worst of its repositories, which nothing builds - but
-> `JpaRepository.getRows()` blocks on nothing and throws only on `FAILED`. No reader meets
-> `UNHYDRATED`, `HYDRATING` or `FAILED`: `connect` hands back only a session whose every type holds a
-> generation, and `fail()` answers `FAILED` only when nothing was ever published, so a later failed
-> rebuild leaves a type `DEGRADED`.
->
-> - Affected: `src/main/java/dev/simplified/persistence/Hydration.java:57` - `blocking()`;
->   `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`;
->   `src/main/java/dev/simplified/persistence/HydrationState.java:17` - the reader contract in its
->   class javadoc; `src/main/java/dev/simplified/persistence/JpaRepository.java:119` - `getRows()`,
->   `:193` - `fail()`
-> - Type: **GAP**
-> - Status: **OPEN** - the non-blocking startup is unbuilt
 
 > #### A write that lands can still throw, and the queue re-applies it
 > A write rebuilds the written type and every type linking into it, after the origin has accepted the
@@ -109,14 +88,15 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > the same row that lands during the backoff. The bot's `LinkCommand` and `RepGiveCommand` let the
 > same throw escape the command for a row that was saved.
 >
-> Nothing retries the rebuild itself. A type without a `@Hydration` cadence that fails to rebuild
-> stays `DEGRADED`, serving its pre-write rows, until another write reaches its rebuild set. The
+> Only a cadence retries the rebuild itself, and no corpus type declares one. A type without a
+> `@Hydration` cadence that fails to rebuild stays `DEGRADED`, serving its pre-write rows, until
+> another write reaches its rebuild set or a type it links into comes due on its own cadence. The
 > corpus writer's session serves no reads - `data` connects it on a private `SessionManager` and only
 > writes through it - so there the re-apply recovers a generation nobody reads; the stale rows matter
 > where a written session is also read, which today is the bot's.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:240` - `write(WriteRequest)`,
->   `:140` - `hydrate(ConcurrentList)`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:265` - `write(WriteRequest)`,
+>   `:147` - `hydrate(ConcurrentList)`;
 >   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:192` - `apply`,
 >   which reschedules at `:214`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:46` - `process`, which
@@ -126,29 +106,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN** - the write and its rebuild report through one exception, and a failed rebuild is
 >   not retried
-
-> #### The background cadence has never run
-> No model or fixture in the workspace declares `@Hydration`, so the scheduler a session builds for a
-> cadence, `hydrateDue`, `isDue`, `isPastStaleness`, `markStale`, the `STALE` state and the per-type
-> JCache TTL a cadence sets have never executed, and no test would notice if they broke. `STALE` is out
-> of reach under the default threshold: `hydrateDue` asks `isDue` first, and at twice `every` a type is
-> due before it is stale, so only a `stale` set below `every`, or a type declaring `stale` without
-> `every` beside one that ticks, ever reaches `markStale`; and since only a tick sets it, a stalled
-> scheduler never reports it. A tick that fails leaves the types it covered `DEGRADED` and says
-> nothing else: the exception leaves `hydrateDue` into the scheduler, which counts it on a handle the
-> session discards, although `ScheduledTask`'s javadoc says it logs, and an `Error` ends the tick for
-> good. Whether the cadence stays at all is undecided - every current consumer is rebuilt by writes
-> alone.
->
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`,
->   which builds the scheduler at `:120-123`, `:199` - `hydrateDue()`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:102` - `isDue()`, `:112` -
->   `isPastStaleness()`, `:200` - `markStale()`;
->   `src/main/java/dev/simplified/persistence/HydrationState.java:42` - `STALE`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:524` -
->   `buildCacheConfiguration(Class)`; `src/main/java/dev/simplified/persistence/Hydration.java`
-> - Type: **GAP**
-> - Status: **OPEN** - keep and test it, or delete it
 
 > #### A collection-valued association is not followed by the rebuild rule
 > A write rebuilds every type linking into the written one through a `@Linked` field, or a field
@@ -165,27 +122,11 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `ClassCastException` out of `connect` rather than a `JpaException`. No `@Linked` field in the
 > workspace has one.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:307` - `dependentsOf`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:291` - `targetOf`;
->   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:247` - `read`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:333` - `dependentsOf`;
+>   `src/main/java/dev/simplified/persistence/JpaRepository.java:319` - `targetOf`;
+>   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:239` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
-
-> #### A shut-down session with a cadence stays reachable until the process exits
-> `Scheduler` registers a JVM shutdown hook it never removes, and its `shutdown()` cancels its tasks
-> without dropping them. A session's tick is a task holding the session, so a session that declared a
-> cadence and was shut down stays reachable through the hook until exit, and with it its `JpaConfig`
-> and the source that names - for a database, a closed session factory and its metadata. Clearing the
-> task list once the tasks are cancelled would release the session and leave an emptied scheduler
-> pinned; removing the hook in `shutdown()` would release both. Persistence can also avoid it on its
-> own side by not building a `Scheduler` for a cadence.
->
-> - Affected: `Simplified-Dev/scheduler/src/main/java/dev/simplified/scheduler/Scheduler.java:64` - the
->   constructor, which adds the hook at `:83`, and `:331` - `shutdown()`;
->   `src/main/java/dev/simplified/persistence/JpaSession.java:104` - `cacheRepositories()`, whose tick
->   at `:122` is bound to the session
-> - Type: **RISK**
-> - Status: **OPEN** - latent, since no type declares a cadence
 
 > #### A document write to an overridden key is reverted by its own rebuild
 > `DocumentSource.Writable.write` merges every layer, applies the request and rewrites the first layer
@@ -252,8 +193,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > answers only `/actuator/prometheus` - and the sessions that do, the read-only ones
 > `SkyBlockData.connect()` registers in `bot`, have no poller at all. A session learns of a moved
 > document only when a write's rebuild covers its type or a `@Hydration` tick comes due, and no corpus
-> type declares one, although `Hydration`'s javadoc calls absence the right answer for a corpus that
-> is told about a change. The rebuild rule says what to rebuild once a moved type is known - that type
+> type declares one. The rebuild rule says what to rebuild once a moved type is known - that type
 > and every type linking into it - but not how the session is told: a fourth `DocumentOrigin` question
 > the session asks, a fingerprint entry the deployment calls, which invariant 5 requires to rebuild
 > nothing when repeated, or not at all.
@@ -261,7 +201,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/poller/CorpusPoller.java` -
 >   `scheduled()` at `:66-77` discards what `poll()` at `:84-111` returns;
 >   `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:95` - `connect()`;
->   `src/main/java/dev/simplified/persistence/Hydration.java:32` - the class javadoc at `:14-17`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java`
 > - Type: **GAP**
 > - Status: **OPEN** - the route is undecided

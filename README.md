@@ -25,10 +25,10 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backe
 - **Repository pattern** - `Repository` holds one generation of a model's rows in memory; every `Sortable` finder answers from it without I/O, and a property declaring `@Indexed` is answered by a hash probe
 - **Sessions** - `JpaSession` hydrates every type a `JpaConfig` registers from its one `Source`, resolves links before it publishes a generation, and rebuilds a written type together with every type that links into it
 - **Session management** - `SessionManager` registers a session once it has hydrated, looks repositories up and routes writes across every session it holds, and shuts them down together
-- **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none has no background rebuild, and is rebuilt only when it, or a type it links into, is written through its session
+- **Hydration cadence** - `@Hydration` declares how often a type is rebuilt in the background and when its generation reports stale; a type declaring none has no cadence of its own, and is rebuilt when it or a type it links into is written through its session, or when a type it links into comes due on its own cadence
 - **Links** - `@Linked` fills a field with the row, or rows, its id property names, and keeps that field out of serialization
 - **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
-- **L2 caching** - EhCache-backed second-level cache for an open database, held in a cache manager no other database shares, with a per-type TTL taken from `@Hydration` and configurable cache concurrency strategies
+- **L2 caching** - EhCache-backed second-level cache for an open database, held in a cache manager no other database shares, with one TTL for every mapped type and configurable cache concurrency strategies
 - **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
 - **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`

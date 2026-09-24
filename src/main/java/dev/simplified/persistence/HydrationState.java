@@ -3,15 +3,18 @@ package dev.simplified.persistence;
 /**
  * The point a {@link Repository}'s generation has reached in its hydration lifecycle.
  *
- * <p>A reader blocks on {@link #UNHYDRATED} and {@link #HYDRATING}, throws on {@link #FAILED}, and is
- * answered immediately on everything else. Scope is per type, and a session-level view is the worst of
- * its repositories, so one failing type is visible without hiding which one it is.
+ * <p>A session is handed back only once every type it registers holds a generation, and a rebuild
+ * that fails after that leaves the type {@link #DEGRADED}, so a reader meets {@link #CURRENT},
+ * {@link #REFRESHING} and {@link #DEGRADED}, and {@link #STALE} for a type declaring
+ * {@link Hydration}. {@link #UNHYDRATED}, {@link #HYDRATING} and {@link #FAILED} are the
+ * states of a first hydration, which a caller never sees. Scope is per type, so one failing type is
+ * visible without hiding which one it is.
  *
  * <p>The distinctions this carries that a boolean cannot. {@link #REFRESHING} is a generation being
- * rebuilt while the existing one still answers, which is the ordinary state under a wired cadence and
- * must never block. {@link #DEGRADED} against {@link #FAILED} is the same failure with and without
+ * rebuilt while the existing one still answers, which is the ordinary state of every rebuild and never
+ * blocks a reader. {@link #DEGRADED} against {@link #FAILED} is the same failure with and without
  * something to serve, and collapsing the two is how a failing origin becomes indistinguishable from an
- * empty corpus. {@link #STALE} against {@link #DEGRADED} separates a stalled scheduler from a failing
+ * empty corpus. {@link #STALE} against {@link #DEGRADED} separates a stalled cadence from a failing
  * origin - both serve old rows, and the fix differs.
  */
 public enum HydrationState {
@@ -27,7 +30,8 @@ public enum HydrationState {
     HYDRATING,
 
     /**
-     * A generation exists and is within its freshness window.
+     * A generation exists, the last rebuild published it, and it has not stood past its stale
+     * threshold.
      */
     CURRENT,
 
@@ -37,7 +41,8 @@ public enum HydrationState {
     REFRESHING,
 
     /**
-     * A generation exists, is past its freshness window, and no rebuild is running.
+     * A generation exists, the last rebuild published it, and the generation has stood past its stale
+     * threshold.
      */
     STALE,
 

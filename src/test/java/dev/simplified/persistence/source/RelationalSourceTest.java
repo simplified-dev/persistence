@@ -86,7 +86,7 @@ class RelationalSourceTest {
             .withCacheConcurrencyStrategy(CacheConcurrencyStrategy.NONSTRICT_READ_WRITE)
             .withCacheMissingStrategy(CacheMissingStrategy.CREATE)
             .withQueryResultsTTL(7)
-            .withDefaultCacheExpiryMs(5000)
+            .withCacheExpiryMs(5000)
             .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
 
         try {
@@ -102,7 +102,7 @@ class RelationalSourceTest {
 
             assertThat(cacheManagerOf(database), not(sameInstance(defaultCacheManager())));
             assertThat(lifeOf(database, "default-query-results-region"), equalTo(new Duration(TimeUnit.SECONDS, 7)));
-            assertThat(lifeOf(database, TestParentModel.class.getName()), equalTo(new Duration(TimeUnit.MILLISECONDS, 10_000)));
+            assertThat(lifeOf(database, TestParentModel.class.getName()), equalTo(new Duration(TimeUnit.MILLISECONDS, 5_000)));
 
             assertThat(database.toString(), equalTo("jdbc:h2:mem:" + DATABASE + ";DB_CLOSE_DELAY=-1 (create-drop)"));
         } finally {

@@ -11,17 +11,23 @@ import java.util.concurrent.TimeUnit;
 /**
  * Declares when a type's rows are rebuilt in the background.
  *
- * <p>Absence means no background cadence: the type is read when its session connects and rebuilt only
- * when it, or a type it links into, is written through the session. That is the right answer for a
- * corpus that changes on someone else's schedule and is told about it. A type asks for a cadence when
- * it has a reason to, rather than inheriting one it never chose.
+ * <p>Absence means the type has no cadence of its own. It is read when its session connects, and
+ * rebuilt when it or a type it links into is written through the session, or when a type it links
+ * into comes due on its own cadence. A change made at the origin by anything else reaches it at the
+ * next of those rebuilds, or at the next connect. A type asks for a cadence when it has a reason to,
+ * rather than inheriting one it never chose.
  *
  * <pre>{@code
  * @Hydration(every = 6, unit = TimeUnit.HOURS)
  * public class Item implements JpaModel { }
  * }</pre>
  *
- * <p>Only the {@link JpaSession} registering the type acts on this. Nothing downstream can force a
+ * <p>Only the {@link JpaSession} registering the type acts on this. It ticks at the shortest cadence
+ * its types declare, and each tick rebuilds every type whose generation has stood for its
+ * {@link #every()}, together with every type linking into it, so a change at the origin reaches a
+ * cadenced type with no write. A generation the last rebuild published reports
+ * {@link HydrationState#STALE} once it stands past its {@link #stale()} threshold, until a rebuild
+ * publishes the next, so a cadence that has stopped shows on read. Nothing downstream can force a
  * rebuild, so a consumer that wants fresher rows declares a shorter cadence rather than reaching for a
  * refresh method.
  *
@@ -43,17 +49,9 @@ public @interface Hydration {
 
     /**
      * How long a generation may stand before it reports {@link HydrationState#STALE}, or {@code 0} to
-     * take twice {@link #every()}.
+     * take {@link #every()} plus twice the interval its session ticks at, which a generation outlives
+     * only when the rebuilds fall a tick behind or the cadence stops.
      */
     long stale() default 0;
-
-    /**
-     * Whether a session waits for this type's first generation before it hands back repositories.
-     *
-     * <p>Set {@code false} for a type whose first hydration is slow and whose readers can afford to
-     * block on first access instead. It says nothing about what a reader does - that is fixed by
-     * {@link HydrationState}.
-     */
-    boolean blocking() default true;
 
 }

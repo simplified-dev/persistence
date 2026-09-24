@@ -97,11 +97,11 @@ public final class LinkedCorpus implements Source.Writable {
                 this.parked.countDown();
 
                 if (!gate.await(10, TimeUnit.SECONDS))
-                    throw new IllegalStateException("the gate was never opened");
+                    throw new IllegalStateException("The gate was never opened");
             }
 
             if (type == this.failing)
-                throw new IllegalStateException("source down for " + type.getSimpleName());
+                throw new IllegalStateException(String.format("Source down for '%s'", type.getSimpleName()));
 
             this.reads.computeIfAbsent(type, key -> new AtomicInteger()).incrementAndGet();
             ConcurrentList<JpaModel> rows = Concurrent.newList();
