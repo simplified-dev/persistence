@@ -5,6 +5,8 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.cadence.CadencedCorpus;
 import dev.simplified.persistence.cadence.CadencedDependent;
 import dev.simplified.persistence.cadence.CadencedRow;
+import dev.simplified.persistence.cadence.CheckedDependent;
+import dev.simplified.persistence.cadence.CheckedRow;
 import dev.simplified.persistence.cadence.OffTickRow;
 import dev.simplified.persistence.cadence.StaleRow;
 import dev.simplified.persistence.cadence.TickRow;
@@ -131,12 +133,14 @@ class JpaSessionCadenceTest {
     }
 
     /**
-     * Has the source answer a fingerprint for the cadenced row and its dependent, so every tick finds
-     * both unmoved until a case moves one.
+     * Has the source answer a fingerprint for each cadenced row and its dependent, so every tick finds
+     * them unmoved until a case moves one.
      */
-    private void fingerprintBoth() {
+    private void fingerprintEveryType() {
         this.corpus.fingerprints.put(CadencedRow.class, "row-one");
         this.corpus.fingerprints.put(CadencedDependent.class, "dependent-one");
+        this.corpus.fingerprints.put(CheckedRow.class, "checked-one");
+        this.corpus.fingerprints.put(CheckedDependent.class, "checked-dependent-one");
     }
 
     @Test
@@ -256,18 +260,18 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("a due type whose fingerprint has not moved is not read, and keeps the generation it was published")
     void anUnmovedDueTypeIsNotRead() {
-        this.fingerprintBoth();
-        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
-        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
-        CadencedRow connected = rows.getRows().getFirst();
+        this.fingerprintEveryType();
+        JpaSession session = this.connect(CheckedRow.class, CheckedDependent.class);
+        Repository<CheckedRow> rows = session.getRepository(CheckedRow.class).orElseThrow();
+        CheckedRow connected = rows.getRows().getFirst();
         Instant connectedAt = rows.getHydratedAt();
         int asks = this.corpus.asks();
 
         // Ticks run one at a time, so the second ask after the connect follows a whole tick.
         awaitUntil(() -> this.corpus.asks() >= asks + 2, "no tick asked the source for fingerprints");
 
-        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(1));
-        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CheckedRow.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CheckedDependent.class), equalTo(1));
         assertThat(rows.getRows().getFirst(), sameInstance(connected));
         assertThat(rows.getHydratedAt(), equalTo(connectedAt));
         assertThat(rows.getState(), equalTo(HydrationState.CURRENT));
@@ -276,27 +280,28 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("ticking repeatedly against an unmoved origin reads nothing, and the checks keep the generation from reporting STALE")
     void repeatedTicksAgainstAnUnmovedOriginReadNothing() {
-        this.fingerprintBoth();
-        Repository<CadencedRow> rows = this.connect(CadencedRow.class, CadencedDependent.class)
-            .getRepository(CadencedRow.class)
+        this.fingerprintEveryType();
+        Repository<CheckedRow> rows = this.connect(CheckedRow.class, CheckedDependent.class)
+            .getRepository(CheckedRow.class)
             .orElseThrow();
         int asks = this.corpus.asks();
 
-        // Five ticks outlast the row's stale threshold several times over, so a check that did not
-        // restart it would show here as STALE.
+        // Twelve asks are eleven whole ticks of at least 50 ms, which outlast the row's 400 ms stale
+        // threshold, so a check that did not restart it would show here as STALE. A check that does
+        // restart it leaves a pause of the test JVM some 350 ms before the threshold is crossed.
         awaitUntil(() -> {
             assertThat(rows.getState(), equalTo(HydrationState.CURRENT));
-            return this.corpus.asks() >= asks + 5;
+            return this.corpus.asks() >= asks + 12;
         }, "the cadence stopped asking");
 
-        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(1));
-        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CheckedRow.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CheckedDependent.class), equalTo(1));
     }
 
     @Test
     @DisplayName("a due type whose fingerprint moved is rebuilt with every type linking into it, once")
     void aMovedTypeIsRebuiltWithItsDependents() {
-        this.fingerprintBoth();
+        this.fingerprintEveryType();
         JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
         Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
         Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();
@@ -336,7 +341,7 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("a DEGRADED type is read at every tick even while its fingerprint matches the one its rows were read under")
     void aDegradedTypeIsReadEvenWhenUnmoved() {
-        this.fingerprintBoth();
+        this.fingerprintEveryType();
         JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
         Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
         Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();
@@ -363,7 +368,7 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("a change landing while the session connects is read at the next tick")
     void aChangeDuringConnectIsPickedUpByTheNextTick() {
-        this.fingerprintBoth();
+        this.fingerprintEveryType();
 
         // The change lands once the connect has read the row and before it reads the dependent, so
         // a fingerprint asked after the read would already name it and the row would never be read
@@ -388,7 +393,7 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("a write leaves every type it rebuilt to be read once more at the next tick, whatever the fingerprint says")
     void aWriteIsReadAgainAtTheNextTick() {
-        this.fingerprintBoth();
+        this.fingerprintEveryType();
         JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
         Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
         CadencedRow written = new CadencedRow();
@@ -414,7 +419,7 @@ class JpaSessionCadenceTest {
     @Test
     @DisplayName("a landed write whose rebuild fails returns and is logged naming every type it covered, and a later tick serves the write")
     void aLandedWriteWhoseRebuildFailsIsServedByALaterTick() {
-        this.fingerprintBoth();
+        this.fingerprintEveryType();
         JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
         Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
         Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();

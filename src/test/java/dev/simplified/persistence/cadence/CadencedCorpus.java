@@ -136,6 +136,16 @@ public final class CadencedCorpus implements Source.Writable {
             row.setId("o1");
             row.setName(this.name);
             rows.add(row);
+        } else if (type == CheckedRow.class) {
+            CheckedRow row = new CheckedRow();
+            row.setId("c1");
+            row.setName(this.name);
+            rows.add(row);
+        } else if (type == CheckedDependent.class) {
+            CheckedDependent dependent = new CheckedDependent();
+            dependent.setId("cd1");
+            dependent.setRowId("c1");
+            rows.add(dependent);
         }
 
         this.reads.computeIfAbsent(type, key -> new AtomicInteger()).incrementAndGet();
