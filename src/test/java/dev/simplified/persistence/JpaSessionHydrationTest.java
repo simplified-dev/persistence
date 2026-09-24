@@ -56,7 +56,6 @@ class JpaSessionHydrationTest {
     private @NotNull JpaSession connect(@NotNull String schema) {
         ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(TestParentModel.class);
         this.database = H2MemoryDriver.named(schema)
-            .build()
             .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
         return this.connect(this.database);

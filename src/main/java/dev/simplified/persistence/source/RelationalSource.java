@@ -6,9 +6,11 @@ import dev.simplified.annotations.Getter;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.persistence.CacheMissingStrategy;
 import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaCacheProvider;
 import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.driver.JpaDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.type.TypeRegistrar;
 import dev.simplified.reflection.Reflection;
@@ -30,6 +32,7 @@ import org.hibernate.mapping.PersistentClass;
 import org.hibernate.mapping.Property;
 import org.hibernate.mapping.SimpleValue;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import javax.cache.CacheManager;
 import javax.cache.Caching;
@@ -39,12 +42,18 @@ import javax.cache.expiry.ModifiedExpiryPolicy;
 import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
  * An open database, and the rows every type it maps are read and written through.
+ *
+ * <p>A database is named through the static of the {@link JpaDriver} that speaks to it, which answers
+ * a {@link Builder} - or, for a database that refuses anonymous connections, an {@link Authenticating}
+ * step that only becomes one once credentials are given - and opened by {@link Builder#open}. A caller
+ * never renders a url: the shape of the address is decided by which driver was reached for.
  *
  * <p>Everything Hibernate needs to exist is here and nowhere else - the service registry, the
  * metadata, the session factory and the JCache regions - so a session reading a document source holds
@@ -57,9 +66,8 @@ import java.util.function.Function;
  * <p>A relational origin always accepts writes. Refusing one is the database's job, through the
  * permissions the connection was opened under, rather than this library's.
  *
- * @see RelationalOrigin#open
+ * @see JpaDriver
  */
-@Getter
 public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
@@ -73,9 +81,28 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     private static final @NotNull String QUERY_RESULTS_REGION = "default-query-results-region";
 
     /**
-     * The database this was opened against.
+     * What kind of database this is.
      */
-    private final @NotNull RelationalOrigin origin;
+    private final @NotNull JpaDriver driver;
+
+    /**
+     * The JDBC url reaching it, rendered by the driver that named it.
+     */
+    private final @NotNull String url;
+
+    /**
+     * The credentials it is reached with, empty for a database that takes none.
+     */
+    private final @NotNull Optional<Credentials> credentials;
+
+    private final boolean usingQueryCache;
+    private final boolean using2ndLevelCache;
+    private final boolean usingStatistics;
+    private final @NotNull CacheConcurrencyStrategy cacheConcurrencyStrategy;
+    private final @NotNull CacheMissingStrategy missingCacheStrategy;
+    private final long queryResultsTTL;
+    private final long defaultCacheExpiryMs;
+    private final @NotNull JpaCacheProvider cacheProvider;
 
     /**
      * The types it maps.
@@ -83,14 +110,9 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     private final @NotNull ConcurrentList<Class<JpaModel>> models;
 
     /**
-     * Assembled Hibernate and HikariCP connection properties.
-     */
-    private final @NotNull ConcurrentMap<String, Object> properties;
-
-    /**
      * Hibernate entity metadata including custom type registrations and column adjustments.
      */
-    private final @NotNull Metadata metadata;
+    @Getter private final @NotNull Metadata metadata;
 
     /**
      * The Hibernate service registry backing {@link #sessionFactory}.
@@ -100,17 +122,28 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     /**
      * The Hibernate session factory opened from {@link #metadata}.
      */
-    private final @NotNull SessionFactory sessionFactory;
+    @Getter private final @NotNull SessionFactory sessionFactory;
 
-    RelationalSource(
-        @NotNull RelationalOrigin origin,
+    private RelationalSource(
+        @NotNull Builder builder,
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Gson gson,
         @NotNull Logging.Level logLevel
     ) {
-        this.origin = origin;
+        this.driver = builder.driver;
+        this.url = builder.url;
+        this.credentials = Optional.ofNullable(builder.credentials);
+        this.usingQueryCache = builder.usingQueryCache;
+        this.using2ndLevelCache = builder.using2ndLevelCache;
+        this.usingStatistics = builder.usingStatistics;
+        this.cacheConcurrencyStrategy = builder.cacheConcurrencyStrategy;
+        this.missingCacheStrategy = builder.missingCacheStrategy;
+        this.queryResultsTTL = builder.queryResultsTTL;
+        this.defaultCacheExpiryMs = builder.defaultCacheExpiryMs;
+        this.cacheProvider = builder.cacheProvider;
         this.models = models;
 
+        this.applyLogLevel(logLevel);
         this.requireDriverOnClasspath();
 
         // The query-results and update-timestamps regions are only created when query caching is
@@ -118,19 +151,44 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         // would leave empty never-used JCache caches sitting on the cluster.
         if (this.isQueryCacheEnabled()) {
             this.buildCacheConfiguration(TIMESTAMPS_REGION, Duration.ETERNAL);
-            long ttl = origin.getQueryResultsTTL();
             this.buildCacheConfiguration(
                 QUERY_RESULTS_REGION,
-                ttl <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, ttl)
+                this.queryResultsTTL <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.SECONDS, this.queryResultsTTL)
             );
         }
 
-        this.properties = this.createProperties(logLevel);
         this.serviceRegistry = new StandardServiceRegistryBuilder()
-            .applySettings(this.properties)
+            .applySettings(this.createProperties(logLevel))
             .build();
-        this.metadata = this.createMetadata(this.createMetadataSources(logLevel).getMetadataBuilder(), gson);
+        this.metadata = this.createMetadata(this.createMetadataSources().getMetadataBuilder(), gson);
         this.sessionFactory = this.metadata.buildSessionFactory();
+    }
+
+    /**
+     * Names a database a caller reaches without credentials.
+     *
+     * <p>Called by a {@link JpaDriver} that has rendered its url, never by a consumer.
+     *
+     * @param driver what kind of database it is
+     * @param url the JDBC url reaching it
+     * @return a builder over that database
+     */
+    public static @NotNull Builder of(@NotNull JpaDriver driver, @NotNull String url) {
+        return new Builder(driver, url);
+    }
+
+    /**
+     * Names a database that has to be authenticated before it can be addressed.
+     *
+     * <p>Called by a {@link JpaDriver} that has rendered its url, never by a consumer. The returned
+     * step holds no database yet, which is what stops a caller reaching one without a password.
+     *
+     * @param driver what kind of database it is
+     * @param url the JDBC url reaching it
+     * @return the step that takes the credentials
+     */
+    public static @NotNull Authenticating authenticating(@NotNull JpaDriver driver, @NotNull String url) {
+        return new Authenticating(driver, url);
     }
 
     /** {@inheritDoc} */
@@ -258,6 +316,32 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     }
 
     /**
+     * The url and the schema policy, for a message naming what a caller opened.
+     */
+    @Override
+    public @NotNull String toString() {
+        return String.format("%s (%s)", this.url, this.driver.getSchemaPolicy());
+    }
+
+    /**
+     * Applies a log level to every logger this database brings with it.
+     *
+     * @param level the level to apply
+     */
+    private void applyLogLevel(@NotNull Logging.Level level) {
+        Logging.setLevel("org.jboss.logging", level);
+        Logging.setLevel("org.hibernate", level);
+        Logging.setLevel("org.ehcache", level);
+        Logging.setLevel(this.driver.getClassPath(), level);
+        Logging.setLevel(String.format("%s-%s", Ehcache.class, TIMESTAMPS_REGION), level);
+        Logging.setLevel(String.format("%s-%s", Ehcache.class, QUERY_RESULTS_REGION), level);
+        this.models.forEach(model -> Logging.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), level));
+
+        if (this.credentials.isPresent())
+            Logging.setLevel("com.zaxxer.hikari", level);
+    }
+
+    /**
      * Whether Hibernate's query cache is active for this database.
      *
      * <p>A Hazelcast provider disables it unconditionally: the query results region wraps results in
@@ -266,11 +350,9 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      * consults the region, so disabling it removes the last code path that touches it.
      */
     private boolean isQueryCacheEnabled() {
-        JpaCacheProvider provider = this.origin.getCacheProvider();
-
-        return this.origin.isUsingQueryCache()
-            && provider != JpaCacheProvider.HAZELCAST_CLIENT
-            && provider != JpaCacheProvider.HAZELCAST_EMBEDDED;
+        return this.usingQueryCache
+            && this.cacheProvider != JpaCacheProvider.HAZELCAST_CLIENT
+            && this.cacheProvider != JpaCacheProvider.HAZELCAST_EMBEDDED;
     }
 
     /**
@@ -279,41 +361,38 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
      * @throws JpaException if the driver class cannot be loaded
      */
     private void requireDriverOnClasspath() {
-        String classPath = this.origin.getDriver().getClassPath();
+        String classPath = this.driver.getClassPath();
 
         try {
             Class.forName(classPath);
         } catch (ClassNotFoundException exception) {
-            throw new JpaException(exception, "No JDBC driver '%s' on the classpath for '%s'", classPath, this.origin);
+            throw new JpaException(exception, "No JDBC driver '%s' on the classpath for '%s'", classPath, this);
         }
     }
 
     /**
-     * Assembles Hibernate and HikariCP properties from the origin.
+     * Assembles Hibernate and HikariCP properties from this database's settings.
      *
      * @param logLevel the level the connection logs at
      */
     private @NotNull ConcurrentMap<String, Object> createProperties(@NotNull Logging.Level logLevel) {
         ConcurrentMap<String, Object> properties = Concurrent.newMap();
 
-        this.origin.getCredentials().ifPresentOrElse(
-            credentials -> {
-                properties.put("hibernate.connection.username", credentials.user());
-                properties.put("hibernate.connection.password", credentials.password());
-                properties.put("hibernate.connection.provider_class", "org.hibernate.hikaricp.internal.HikariCPConnectionProvider");
-                properties.put("hikari.maximumPoolSize", 20);
-            },
-            () -> {}
-        );
+        this.credentials.ifPresent(credentials -> {
+            properties.put("hibernate.connection.username", credentials.user());
+            properties.put("hibernate.connection.password", credentials.password());
+            properties.put("hibernate.connection.provider_class", "org.hibernate.hikaricp.internal.HikariCPConnectionProvider");
+            properties.put("hikari.maximumPoolSize", 20);
+        });
 
-        String hbm2ddl = this.origin.getSchemaPolicy().getHbm2ddl();
+        String hbm2ddl = this.driver.getSchemaPolicy().getHbm2ddl();
 
         if (hbm2ddl != null)
             properties.put("hibernate.hbm2ddl.auto", hbm2ddl);
 
-        properties.put("hibernate.dialect", this.origin.getDriver().getDialectClass());
-        properties.put("hibernate.connection.driver_class", this.origin.getDriver().getClassPath());
-        properties.put("hibernate.connection.url", this.origin.getUrl());
+        properties.put("hibernate.dialect", this.driver.getDialectClass());
+        properties.put("hibernate.connection.driver_class", this.driver.getClassPath());
+        properties.put("hibernate.connection.url", this.url);
         properties.put("hibernate.globally_quoted_identifiers", true);
 
         properties.put("hibernate.jdbc.log.warnings", logLevel.includes(Logging.Level.WARN));
@@ -322,7 +401,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         properties.put("hibernate.highlight_sql", logLevel.includes(Logging.Level.TRACE));
         properties.put("hibernate.use_sql_comments", logLevel.includes(Logging.Level.DEBUG));
 
-        properties.put("hibernate.generate_statistics", this.origin.isUsingStatistics());
+        properties.put("hibernate.generate_statistics", this.usingStatistics);
 
         properties.put("hibernate.order_inserts", true);
         properties.put("hibernate.order_updates", true);
@@ -335,36 +414,34 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         properties.put("hibernate.cache.use_reference_entries", true);
         properties.put("hibernate.cache.use_structured_entries", logLevel.includes(Logging.Level.DEBUG));
         properties.put("hibernate.cache.use_query_cache", this.isQueryCacheEnabled());
-        properties.put("hibernate.cache.use_second_level_cache", this.origin.isUsing2ndLevelCache());
-        properties.put("hibernate.javax.cache.missing_cache_strategy", this.origin.getMissingCacheStrategy().getExternalRepresentation());
+        properties.put("hibernate.cache.use_second_level_cache", this.using2ndLevelCache);
+        properties.put("hibernate.javax.cache.missing_cache_strategy", this.missingCacheStrategy.getExternalRepresentation());
 
         // Pin the JCache provider for Hibernate's internal JCacheRegionFactory so it does not call
         // the no-arg lookup, which throws when more than one provider sits on the runtime classpath.
         // Property names use the hibernate.javax.cache.* prefix per hibernate-jcache 7.3 - the
         // jakarta-prefixed equivalents are not honored.
-        JpaCacheProvider cacheProvider = this.origin.getCacheProvider();
-        properties.put("hibernate.javax.cache.provider", cacheProvider.getProviderClassName());
+        properties.put("hibernate.javax.cache.provider", this.cacheProvider.getProviderClassName());
 
-        if (cacheProvider.getConfigUri() != null)
-            properties.put("hibernate.javax.cache.uri", cacheProvider.getConfigUri());
+        if (this.cacheProvider.getConfigUri() != null)
+            properties.put("hibernate.javax.cache.uri", this.cacheProvider.getConfigUri());
 
-        if (this.origin.getCacheConcurrencyStrategy() != CacheConcurrencyStrategy.NONE)
-            properties.put("hibernate.cache.default_cache_concurrency_strategy", this.origin.getCacheConcurrencyStrategy().toAccessType().getExternalName());
+        if (this.cacheConcurrencyStrategy != CacheConcurrencyStrategy.NONE)
+            properties.put("hibernate.cache.default_cache_concurrency_strategy", this.cacheConcurrencyStrategy.toAccessType().getExternalName());
 
         return properties.toUnmodifiable();
     }
 
     /**
-     * Registers annotated entity classes and configures per-entity cache logging.
+     * Registers the mapped entity classes, each with its own cache region.
      */
-    private @NotNull MetadataSources createMetadataSources(@NotNull Logging.Level logLevel) {
+    private @NotNull MetadataSources createMetadataSources() {
         MetadataSources metadataSources = new MetadataSources(this.serviceRegistry);
 
         this.models
             .stream()
             .map(this::buildCacheConfiguration)
-            .peek(metadataSources::addAnnotatedClass)
-            .forEach(model -> Logging.setLevel(String.format("%s-%s", Ehcache.class, model.getName()), logLevel));
+            .forEach(metadataSources::addAnnotatedClass);
 
         return metadataSources;
     }
@@ -394,7 +471,7 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
         Metadata metadata = metadataBuilder.build();
         registrars.forEach(registrar -> registrar.postProcess(metadata));
 
-        if (this.origin.getSchemaPolicy().isGenerated())
+        if (this.driver.getSchemaPolicy().isGenerated())
             adjustColumnLength(metadata);
 
         return metadata;
@@ -402,13 +479,13 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
 
     /**
      * Creates a JCache configuration for one type, with the TTL its {@link Hydration} cadence or the
-     * origin's default asks for, multiplied as a safety net.
+     * database's default asks for, multiplied as a safety net.
      */
     private @NotNull Class<JpaModel> buildCacheConfiguration(@NotNull Class<JpaModel> type) {
         Hydration hydration = type.getAnnotation(Hydration.class);
         long expiryMs = hydration != null && hydration.every() > 0
             ? hydration.unit().toMillis(hydration.every())
-            : this.origin.getDefaultCacheExpiryMs();
+            : this.defaultCacheExpiryMs;
 
         long jcacheTtlMs = expiryMs <= 0 ? 0 : expiryMs * CACHE_TTL_MULTIPLIER;
         Duration duration = jcacheTtlMs <= 0 ? Duration.ETERNAL : new Duration(TimeUnit.MILLISECONDS, jcacheTtlMs);
@@ -434,22 +511,21 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
     }
 
     /**
-     * Resolves the JCache manager for the origin's provider, opening it against the provider's
+     * Resolves the JCache manager for this database's provider, opening it against the provider's
      * configuration resource when it names one.
      *
      * @return the cache manager for the configured provider
      */
     private @NotNull CacheManager resolveCacheManager() {
-        JpaCacheProvider provider = this.origin.getCacheProvider();
-        javax.cache.spi.CachingProvider cachingProvider = Caching.getCachingProvider(provider.getProviderClassName());
+        javax.cache.spi.CachingProvider cachingProvider = Caching.getCachingProvider(this.cacheProvider.getProviderClassName());
 
-        if (provider.getConfigUri() == null)
+        if (this.cacheProvider.getConfigUri() == null)
             return cachingProvider.getCacheManager();
 
         try {
-            return cachingProvider.getCacheManager(new URI(provider.getConfigUri()), cachingProvider.getDefaultClassLoader());
+            return cachingProvider.getCacheManager(new URI(this.cacheProvider.getConfigUri()), cachingProvider.getDefaultClassLoader());
         } catch (URISyntaxException exception) {
-            throw new JpaException(exception, "Invalid cache provider config URI '%s'", provider.getConfigUri());
+            throw new JpaException(exception, "Invalid cache provider config URI '%s'", this.cacheProvider.getConfigUri());
         }
     }
 
@@ -477,6 +553,161 @@ public final class RelationalSource implements Source.Writable, AutoCloseable {
                 }
             }
         }
+    }
+
+    /**
+     * What a database is reached with.
+     *
+     * @param user the account name
+     * @param password the account password
+     */
+    private record Credentials(@NotNull String user, @NotNull String password) {}
+
+    /**
+     * A database named but not yet authenticated.
+     *
+     * <p>It is not a {@link Builder} and cannot become one without {@link #as}, which is how a
+     * database that refuses anonymous connections refuses them at the point one is described rather
+     * than at the point one is opened.
+     */
+    public static final class Authenticating {
+
+        private final @NotNull JpaDriver driver;
+        private final @NotNull String url;
+
+        private Authenticating(@NotNull JpaDriver driver, @NotNull String url) {
+            this.driver = driver;
+            this.url = url;
+        }
+
+        /**
+         * Names the account the database is reached with.
+         *
+         * @param user the account name
+         * @param password the account password
+         * @return a builder over that database
+         */
+        public @NotNull Builder as(@NotNull String user, @NotNull String password) {
+            Builder builder = new Builder(this.driver, this.url);
+            builder.credentials = new Credentials(user, password);
+            return builder;
+        }
+
+    }
+
+    /**
+     * Names what Hibernate caches over a database, and opens it.
+     *
+     * <p>A builder only exists where a database does, so the defaults are the ones a database wants:
+     * both caches on, read-write concurrency, a missing region created with a warning, and a
+     * thirty-second query result life.
+     */
+    public static final class Builder {
+
+        private final @NotNull JpaDriver driver;
+        private final @NotNull String url;
+        private @Nullable Credentials credentials;
+
+        private boolean usingQueryCache = true;
+        private boolean using2ndLevelCache = true;
+        private boolean usingStatistics = false;
+        private @NotNull CacheConcurrencyStrategy cacheConcurrencyStrategy = CacheConcurrencyStrategy.READ_WRITE;
+        private @NotNull CacheMissingStrategy missingCacheStrategy = CacheMissingStrategy.CREATE_WARN;
+        private long queryResultsTTL = 30;
+        private long defaultCacheExpiryMs = 30_000;
+        private @NotNull JpaCacheProvider cacheProvider = JpaCacheProvider.EHCACHE;
+
+        private Builder(@NotNull JpaDriver driver, @NotNull String url) {
+            this.driver = driver;
+            this.url = url;
+        }
+
+        /**
+         * Sets whether the Hibernate query cache is enabled.
+         */
+        public @NotNull Builder isUsingQueryCache(boolean value) {
+            this.usingQueryCache = value;
+            return this;
+        }
+
+        /**
+         * Sets whether the Hibernate second-level cache is enabled.
+         */
+        public @NotNull Builder isUsing2ndLevelCache(boolean value) {
+            this.using2ndLevelCache = value;
+            return this;
+        }
+
+        /**
+         * Enables Hibernate statistics gathering.
+         */
+        public @NotNull Builder isUsingStatistics() {
+            this.usingStatistics = true;
+            return this;
+        }
+
+        /**
+         * Sets the Hibernate {@link CacheConcurrencyStrategy} for entity caching.
+         */
+        public @NotNull Builder withCacheConcurrencyStrategy(@NotNull CacheConcurrencyStrategy strategy) {
+            this.cacheConcurrencyStrategy = strategy;
+            return this;
+        }
+
+        /**
+         * Sets the Hibernate {@link CacheMissingStrategy} for absent cache regions.
+         */
+        public @NotNull Builder withCacheMissingStrategy(@NotNull CacheMissingStrategy strategy) {
+            this.missingCacheStrategy = strategy;
+            return this;
+        }
+
+        /**
+         * Sets the query results cache time-to-live in seconds.
+         */
+        public @NotNull Builder withQueryResultsTTL(long seconds) {
+            this.queryResultsTTL = seconds;
+            return this;
+        }
+
+        /**
+         * Sets the default JCache TTL in milliseconds for types declaring no hydration cadence.
+         */
+        public @NotNull Builder withDefaultCacheExpiryMs(long defaultCacheExpiryMs) {
+            this.defaultCacheExpiryMs = defaultCacheExpiryMs;
+            return this;
+        }
+
+        /**
+         * Sets the {@link JpaCacheProvider} backing the JCache second-level cache.
+         */
+        public @NotNull Builder withCacheProvider(@NotNull JpaCacheProvider cacheProvider) {
+            this.cacheProvider = cacheProvider;
+            return this;
+        }
+
+        /**
+         * Opens the database and holds it, so the rows of every type it maps can be read and
+         * written.
+         *
+         * <p>The mapped types are the database's, not a session's. A session registers the types it
+         * holds a generation of, and a mapped type left out of that list is reached through the
+         * returned source's Hibernate access instead.
+         *
+         * @param models the types the database maps
+         * @param gson the parser custom Hibernate types bind through
+         * @param logLevel the level the connection logs at
+         * @return the open database, which the caller owns and must close once every session reading
+         *         it is shut down
+         */
+        public @NotNull RelationalSource open(
+            @NotNull ConcurrentList<Class<JpaModel>> models,
+            @NotNull Gson gson,
+            @NotNull Logging.Level logLevel
+        ) {
+            return new RelationalSource(this, models, gson, logLevel);
+        }
+
     }
 
 }

@@ -66,7 +66,6 @@ class GsonTypeRoundTripTest {
             .isUsing2ndLevelCache(false)
             .isUsingQueryCache(false)
             .withDefaultCacheExpiryMs(0)
-            .build()
             .open(JpaModel.resolveModels(GsonFixtureModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
     }
 
@@ -537,7 +536,6 @@ class GsonTypeRoundTripTest {
                 .isUsing2ndLevelCache(false)
                 .isUsingQueryCache(false)
                 .withDefaultCacheExpiryMs(0)
-                .build()
                 .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
             try {

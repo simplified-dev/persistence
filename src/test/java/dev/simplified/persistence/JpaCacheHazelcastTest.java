@@ -76,7 +76,6 @@ class JpaCacheHazelcastTest {
             .isUsingStatistics()
             .withDefaultCacheExpiryMs(2000)
             .withCacheProvider(JpaCacheProvider.HAZELCAST_EMBEDDED)
-            .build()
             .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
         session = sessionManager.connect(new JpaConfig(models, database));
     }

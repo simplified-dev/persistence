@@ -1,7 +1,7 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
-import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
@@ -27,8 +27,8 @@ public final class H2FileDriver implements JpaDriver {
      * @param path the database file path, without the H2 suffix
      * @return a builder over that database
      */
-    public static @NotNull RelationalOrigin.Builder at(@NotNull Path path) {
-        return RelationalOrigin.of(new H2FileDriver(), String.format("jdbc:h2:file:%s", path));
+    public static @NotNull RelationalSource.Builder at(@NotNull Path path) {
+        return RelationalSource.of(new H2FileDriver(), String.format("jdbc:h2:file:%s", path));
     }
 
 }

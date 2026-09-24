@@ -1,7 +1,7 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
-import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -30,7 +30,7 @@ public final class H2TcpDriver implements JpaDriver {
      * @param schema the database name
      * @return the step that takes the credentials
      */
-    public static @NotNull RelationalOrigin.Authenticating at(@NotNull String host, @NotNull String schema) {
+    public static @NotNull RelationalSource.Authenticating at(@NotNull String host, @NotNull String schema) {
         return at(host, DEFAULT_PORT, schema);
     }
 
@@ -42,8 +42,8 @@ public final class H2TcpDriver implements JpaDriver {
      * @param schema the database name
      * @return the step that takes the credentials
      */
-    public static @NotNull RelationalOrigin.Authenticating at(@NotNull String host, int port, @NotNull String schema) {
-        return RelationalOrigin.authenticating(
+    public static @NotNull RelationalSource.Authenticating at(@NotNull String host, int port, @NotNull String schema) {
+        return RelationalSource.authenticating(
             new H2TcpDriver(),
             String.format("jdbc:h2:tcp://%s:%s/%s", host, port, schema)
         );

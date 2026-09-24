@@ -41,7 +41,6 @@ class JpaCacheTest {
         this.database = H2MemoryDriver.named("jpa_cache_test")
             .isUsingStatistics()
             .withDefaultCacheExpiryMs(2000)
-            .build()
             .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
         this.session = this.sessionManager.connect(new JpaConfig(models, this.database));
     }

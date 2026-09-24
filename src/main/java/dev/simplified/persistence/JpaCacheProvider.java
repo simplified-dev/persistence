@@ -3,7 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
 import dev.simplified.annotations.RequiredArgsConstructor;
-import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,7 +22,7 @@ import javax.cache.Caching;
  * persistence library declares all Hazelcast classes as {@code compileOnly} so
  * consumers that stay on EhCache do not transitively pull Hazelcast.</p>
  *
- * @see RelationalOrigin.Builder#withCacheProvider(JpaCacheProvider)
+ * @see RelationalSource.Builder#withCacheProvider(JpaCacheProvider)
  */
 @Getter
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)

@@ -1,6 +1,6 @@
 package dev.simplified.persistence.driver;
 
-import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -8,11 +8,11 @@ import org.jetbrains.annotations.NotNull;
  * its schema.
  *
  * <p>Three constants and nothing else. Where a particular database is, and what credentials reach it,
- * belong to a {@link RelationalOrigin} - and each implementation names the origin it can address
+ * belong to a {@link RelationalSource} - and each implementation names the database it can address
  * through a static of its own, so an in-memory database has nowhere to put a host and a networked one
  * cannot be reached without a password.
  *
- * @see RelationalOrigin
+ * @see RelationalSource
  * @see SchemaPolicy
  */
 public interface JpaDriver {

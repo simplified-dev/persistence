@@ -1,7 +1,7 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
-import dev.simplified.persistence.source.RelationalOrigin;
+import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -28,8 +28,8 @@ public final class H2MemoryDriver implements JpaDriver {
      * @param name the database name, unique within the JVM
      * @return a builder over that database
      */
-    public static @NotNull RelationalOrigin.Builder named(@NotNull String name) {
-        return RelationalOrigin.of(
+    public static @NotNull RelationalSource.Builder named(@NotNull String name) {
+        return RelationalSource.of(
             new H2MemoryDriver(),
             String.format("jdbc:h2:mem:%s;DB_CLOSE_DELAY=-1", name)
         );
