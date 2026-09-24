@@ -3,6 +3,7 @@ package dev.simplified.persistence;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import org.jetbrains.annotations.NotNull;
 
@@ -106,23 +107,25 @@ public final class SessionManager {
     }
 
     /**
-     * Applies one write through the session that holds the type, and rebuilds that type.
+     * Applies one write through the session that registers the type, and rebuilds that type and
+     * every type linking into it.
      *
      * <p>The symmetric member to {@link #getRepository(Class)}: a consumer that reaches a
      * repository through this registry writes through it too, rather than having to hold on to
-     * whichever session it connected.
+     * whichever session it connected. A write goes to the session registering the request's exact
+     * type, and succeeds only where that session reads a {@link Source.Writable}.
      *
      * @param request the write to apply
      * @param <M> the entity type
-     * @throws JpaException if no active session holds the type, or its source holds no write
-     *         instruction
+     * @throws JpaException if no active session registers the type, its source holds no write
+     *         instruction, or the rebuild after the applied write fails
      */
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())
             throw new JpaException("There are no active sessions");
 
         for (JpaSession session : this.sessions) {
-            if (session.getRepository(request.type()).isPresent()) {
+            if (session.getRepository(request.type()).filter(repository -> repository.getType() == request.type()).isPresent()) {
                 session.write(request);
                 return;
             }

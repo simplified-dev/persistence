@@ -5,6 +5,7 @@ import dev.simplified.collection.ConcurrentList;
 import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.linked.LinkedParent;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.RelationalSource;
@@ -18,14 +19,19 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Covers the hydration pass a session runs when it connects: every type reads once, links resolve
- * afterwards, and a failing origin is not quietly served as an empty one.
+ * The hydration pass a session runs when it connects: every type reads once, links resolve
+ * afterwards, the session is registered only once it has hydrated, and a failing source is not
+ * quietly served as an empty one.
  */
 @Tag("slow")
 class JpaSessionHydrationTest {
@@ -59,6 +65,84 @@ class JpaSessionHydrationTest {
             .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
         return this.connect(this.database);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static @NotNull ConcurrentList<Class<JpaModel>> models(@NotNull Class<?>... types) {
+        ConcurrentList<Class<JpaModel>> listed = Concurrent.newList();
+
+        for (Class<?> type : types)
+            listed.add((Class<JpaModel>) type);
+
+        return listed.toUnmodifiable();
+    }
+
+    @Test
+    @DisplayName("a lookup made while a session hydrates does not reach it")
+    void registrationWaitsForHydration() {
+        this.sessionManager = new SessionManager();
+        AtomicReference<String> seen = new AtomicReference<>();
+
+        this.sessionManager.connect(new JpaConfig(JpaModel.resolveModels(TestParentModel.class), new Source() {
+
+            @Override
+            public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
+                try {
+                    sessionManager.getRepository(TestParentModel.class);
+                    seen.compareAndSet(null, "reached the session");
+                } catch (JpaException exception) {
+                    seen.compareAndSet(null, exception.getMessage());
+                }
+
+                return Concurrent.newUnmodifiableList();
+            }
+
+        }));
+
+        assertThat(seen.get(), equalTo("There are no active sessions"));
+        assertThat(this.sessionManager.isActive(), is(true));
+    }
+
+    @Test
+    @DisplayName("a type the database maps but the session does not register is reached through the database")
+    void aMappedTypeNeedNotBeRegistered() {
+        this.database = H2MemoryDriver.named("hydration_mapped_only")
+            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+
+        TestParentModel parent = new TestParentModel();
+        parent.setId(1);
+        parent.setName("parent1");
+        TestChildModel child = new TestChildModel();
+        child.setId(10);
+        child.setParent(parent);
+        child.setValue("child1");
+        this.database.transaction(hibernate -> {
+            hibernate.persist(parent);
+            hibernate.persist(child);
+        });
+
+        this.sessionManager = new SessionManager();
+        JpaSession session = this.sessionManager.connect(new JpaConfig(models(TestChildModel.class), this.database));
+
+        assertThat(session.getRepository(TestChildModel.class).orElseThrow().getRows().getFirst().getParent().getName(), equalTo("parent1"));
+        assertThat(session.getRepository(TestParentModel.class).isEmpty(), is(true));
+        this.database.with(hibernate -> { assertNotNull(hibernate.find(TestParentModel.class, 1)); });
+    }
+
+    @Test
+    @DisplayName("a registered type the database does not map fails the connect, naming the type")
+    void aRegisteredTypeMustBeMapped() {
+        this.database = H2MemoryDriver.named("hydration_unmapped")
+            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+        this.sessionManager = new SessionManager();
+
+        JpaException thrown = assertThrows(
+            JpaException.class,
+            () -> this.sessionManager.connect(new JpaConfig(models(LinkedParent.class), this.database))
+        );
+
+        assertThat(thrown.getMessage(), containsString(LinkedParent.class.getName()));
+        assertThat(this.sessionManager.isActive(), is(false));
     }
 
     @Test

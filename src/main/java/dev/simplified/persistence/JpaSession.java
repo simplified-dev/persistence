@@ -10,9 +10,7 @@ import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.scheduler.Scheduler;
-import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -21,6 +19,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 /**
  * A JPA session holding one {@link JpaRepository} per registered type, every one of them read from the
@@ -32,8 +31,10 @@ import java.util.concurrent.TimeUnit;
  * a row before its links resolve. Rebuilds run one at a time.
  *
  * <p>A rebuild covers the types asked for and every registered type that links into one of them,
- * directly or through another, whether by {@link Linked} or by a JPA association. So after a write or
- * a due tick no held row points at an instance its target's repository no longer holds.
+ * directly or through another, whether by {@link Linked} or by a single-valued JPA association. Once
+ * the rebuild completes, a {@link Linked} field holds the instance its target's repository holds, and
+ * an association holds a copy read with its owner that carries the target's current row. Publication
+ * is per type, so a reader between two types' publication sees one new generation and one old.
  *
  * <p>The session never asks what kind of source it holds. A database is opened by the caller, who
  * keeps it for Hibernate access and closes it once the session is shut down, so nothing here reaches
@@ -80,7 +81,7 @@ public final class JpaSession {
     /**
      * {@code true} while this session has not been shut down.
      */
-    @Getter private boolean active = true;
+    @Getter private volatile boolean active = true;
 
     /**
      * Constructs a session over the given configuration, performing no I/O.
@@ -129,12 +130,16 @@ public final class JpaSession {
      * records the failure. Publishing the rest would hand out rows whose links point into a type that
      * never read, which is a wrong answer rather than a missing one.
      *
-     * <p>Rebuilds run one at a time, so a write and a due tick never interleave their passes.
+     * <p>Rebuilds run one at a time, so a write and a due tick never interleave their passes, and a
+     * shutdown waits for the rebuild in flight. A session that has been shut down rebuilds nothing.
      *
      * @param asked the registered types a write or a tick asks to rebuild
      * @throws JpaException if any covered type fails to read or link
      */
     private synchronized void hydrate(@NotNull ConcurrentList<Class<JpaModel>> asked) {
+        if (!this.active)
+            return;
+
         ConcurrentSet<Class<JpaModel>> covered = Concurrent.newSet();
 
         asked.forEach(type -> {
@@ -156,7 +161,7 @@ public final class JpaSession {
 
             for (Class<JpaModel> type : types)
                 this.repositories.get(type).link(pass.get(type), target -> keyed.computeIfAbsent(target, key -> this.lookupFor(key, pass)));
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | Error exception) {
             types.forEach(type -> this.repositories.get(type).fail());
             throw exception;
         }
@@ -187,10 +192,13 @@ public final class JpaSession {
     }
 
     /**
-     * Rebuilds every type whose {@link Hydration} cadence has come due, and marks the rest stale when
-     * they have stood too long.
+     * Rebuilds every type whose {@link Hydration} cadence has come due, together with every type
+     * linking into them, and marks the rest stale when they have stood too long.
      */
-    private void hydrateDue() {
+    private synchronized void hydrateDue() {
+        if (!this.active)
+            return;
+
         ConcurrentList<Class<JpaModel>> due = Concurrent.newList();
 
         for (Class<JpaModel> model : this.config.models()) {
@@ -216,18 +224,26 @@ public final class JpaSession {
      * asking for it, and a request naming no rows writes and rebuilds nothing, so nothing downstream
      * gains a way to force a rehydration.
      *
+     * <p>The request names the exact type it writes. A subtype registered in its place is not written
+     * through a supertype, because the rows would reach the source under one type and be rebuilt under
+     * another.
+     *
      * @param request the write to apply
      * @param <M> the entity type
-     * @throws JpaException if the session is inactive, the type is unregistered, or the source holds
-     *         no write instruction
+     * @throws JpaException if the session is inactive, the type is not registered exactly, or the
+     *         source holds no write instruction; or if the rebuild after an applied write fails, in
+     *         which case the write has landed and every type the rebuild covered reports
+     *         {@link HydrationState#DEGRADED}
      */
+    @SuppressWarnings("unchecked")
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())
             throw new JpaException("Session connection is not active");
 
-        Class<JpaModel> type = registered(this.config.models(), request.type()).orElseThrow(
-            () -> new JpaException("Session holds no '%s' to write it", request.type().getName())
-        );
+        if (!this.config.models().contains(request.type()))
+            throw new JpaException("Session holds no '%s' to write it", request.type().getName());
+
+        Class<JpaModel> type = (Class<JpaModel>) (Class<?>) request.type();
 
         if (!(this.config.source() instanceof Source.Writable writable))
             throw new JpaException("Source for '%s' holds no write instruction", request.type().getName());
@@ -258,27 +274,31 @@ public final class JpaSession {
     /**
      * Performs an orderly shutdown of this session.
      *
-     * <p>Marks the session as inactive, clears all repositories and shuts down the scheduler, if one
-     * was built. The source is not closed: whoever opened it closes it.</p>
+     * <p>Shuts down the scheduler, if one was built, then waits for any rebuild in flight before it
+     * marks the session inactive and clears all repositories. The source is not closed: whoever
+     * opened it closes it.</p>
      *
      * <p>After shutdown, {@link #getRepository(Class)} answers empty for every type. The session
      * object should be discarded.</p>
      */
     void shutdown() {
-        this.active = false;
-        this.repositories.clear();
-
         if (this.scheduler != null)
             this.scheduler.shutdown();
+
+        synchronized (this) {
+            this.active = false;
+            this.repositories.clear();
+        }
     }
 
     /**
      * Maps each registered type to every registered type linking into it, directly or through
      * another.
      *
-     * <p>An edge is a {@link Linked} field or a JPA association whose target a registered type
-     * answers for. The walk records each dependent once, so a cycle ends with every type on it in the
-     * others' sets and adds nothing further.
+     * <p>An edge is a {@link Linked} field, or a single-valued JPA association - {@link ManyToOne} or
+     * {@link OneToOne} - whose target a registered type answers for. A collection-valued association
+     * is not followed. The walk records each dependent once, so a cycle ends with every type on it in
+     * the others' sets and adds nothing further.
      *
      * @param models the registered types
      * @return the transitive dependents of every type something links into
@@ -289,13 +309,12 @@ public final class JpaSession {
         ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> direct = Concurrent.newMap();
 
         for (Class<JpaModel> model : models) {
-            new Reflection<>(model).getFields()
-                .stream()
-                .filter(field -> field.hasAnnotation(Linked.class)
-                    || field.hasAnnotation(ManyToOne.class)
-                    || field.hasAnnotation(OneToOne.class)
-                    || field.hasAnnotation(OneToMany.class)
-                    || field.hasAnnotation(ManyToMany.class))
+            Stream.concat(
+                    JpaRepository.links(model).stream(),
+                    new Reflection<>(model).getFields()
+                        .stream()
+                        .filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
+                )
                 .map(JpaRepository::targetOf)
                 .flatMap(target -> registered(models, target).stream())
                 .forEach(target -> direct.computeIfAbsent(target, key -> Concurrent.newSet()).add(model));
