@@ -9,10 +9,13 @@ import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.persistence.unfollowable.CollectionOwner;
+import dev.simplified.persistence.unfollowable.EagerIntoEager;
+import dev.simplified.persistence.unfollowable.EagerIntoLazy;
 import dev.simplified.persistence.unfollowable.ElementOwner;
 import dev.simplified.persistence.unfollowable.LazyChild;
 import dev.simplified.persistence.unfollowable.LazyOneToOne;
 import dev.simplified.persistence.unfollowable.ManyToManyOwner;
+import dev.simplified.persistence.unfollowable.TwoHopsIntoLazy;
 import dev.simplified.persistence.unfollowable.WildcardLinked;
 import dev.simplified.persistence.unmapped.ContractRow;
 import dev.simplified.reflection.Reflection;
@@ -216,6 +219,52 @@ class SessionManagerTest {
     }
 
     @Test
+    @DisplayName("an unregistered type an eager association reaches is refused for a lazy association, naming the path from the registered type, and a registered one on that path as itself")
+    void anUnfollowableAssociationReachedEagerlyIsRefused() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+        SessionManager manager = new SessionManager();
+        String reached = "Field 'parent' of '" + LazyChild.class.getName() + "', reached from '%s' through '%s', declares a lazy @ManyToOne, which a held generation cannot follow";
+
+        try {
+            assertThat(
+                refusalOf(manager, corpus, LinkedParent.class, EagerIntoLazy.class),
+                equalTo(String.format(reached, EagerIntoLazy.class.getName(), "child"))
+            );
+            assertThat(
+                refusalOf(manager, corpus, LinkedParent.class, TwoHopsIntoLazy.class),
+                equalTo(String.format(reached, TwoHopsIntoLazy.class.getName(), "hop.child"))
+            );
+            assertThat(
+                refusalOf(manager, corpus, LinkedParent.class, EagerIntoLazy.class, LazyChild.class),
+                equalTo("Field 'parent' of '" + LazyChild.class.getName() + "' declares a lazy @ManyToOne, which a held generation cannot follow")
+            );
+
+            assertThat(corpus.readsOf(LinkedParent.class), equalTo(0));
+            assertThat(manager.isActive(), is(false));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("an unregistered type an eager association reaches is accepted when its own associations are eager, a cycle among them included")
+    void anEagerlyReachedTypeWithEagerAssociationsIsAccepted() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.parents.put("p1", "one");
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(models(LinkedParent.class, EagerIntoEager.class), corpus));
+
+            assertThat(session.getRepository(EagerIntoEager.class).isPresent(), is(true));
+            assertThat(corpus.readsOf(LinkedParent.class), equalTo(1));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
     @DisplayName("a wildcard @Linked list is refused at connect as a JpaException, not a ClassCastException")
     void aWildcardLinkIsRefused() {
         LinkedCorpus corpus = new LinkedCorpus();
@@ -266,6 +315,18 @@ class SessionManagerTest {
         private LinkedParent[] array;
         private String notModel;
 
+    }
+
+    /**
+     * Connects the given types on a manager, expecting the connect to be refused.
+     *
+     * @param manager the manager to connect on
+     * @param source the source the types are read from
+     * @param types the registered types, in registration order
+     * @return the refusal's message
+     */
+    private static @NotNull String refusalOf(@NotNull SessionManager manager, @NotNull Source source, @NotNull Class<?>... types) {
+        return assertThrows(JpaException.class, () -> manager.connect(new JpaConfig(models(types), source))).getMessage();
     }
 
     /**

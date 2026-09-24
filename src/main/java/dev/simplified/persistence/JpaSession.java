@@ -49,7 +49,10 @@ import java.util.stream.Stream;
  * association is refused at connect, before anything is read. Read from a database, a lazy field
  * fails once the read that loaded its owner has closed, and a rebuild does not follow a collection,
  * so none of them can be served from a held generation. Such a type belongs outside the registered
- * models, reached through the database that maps it.
+ * models, reached through the database that maps it. An eager single-valued association reads its
+ * target with its owner whether or not the target is registered, so the check follows every one of
+ * them out of a registered type, through as many unregistered types as they lead to, and refuses
+ * the same fields on each type it reaches, naming the path from the registered type.
  *
  * <p>The session records the fingerprint its source answered for each type before the read that
  * produced the held generation. A {@link Hydration} tick asks again and reads only the due types
@@ -116,7 +119,8 @@ public final class JpaSession {
      * Constructs a session over the given configuration, performing no I/O.
      *
      * @param config the registered models and the source they are read from
-     * @throws JpaException if a registered type declares a field a held generation cannot follow
+     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
+     *         associations, declares a field a held generation cannot follow
      */
     JpaSession(@NotNull JpaConfig config) {
         this.config = config;
@@ -485,19 +489,22 @@ public final class JpaSession {
 
     /**
      * Maps each registered type to every registered type linking into it, directly or through
-     * another, refusing a type that declares a field a held generation cannot follow.
+     * another, refusing a type that declares, or reaches a type declaring, a field a held generation
+     * cannot follow.
      *
      * <p>An edge is a {@link Linked} field, or a single-valued JPA association - {@link ManyToOne} or
      * {@link OneToOne} - whose target a registered type answers for. A field declaring
      * {@link OneToMany}, {@link ManyToMany} or {@link ElementCollection}, or a single-valued
-     * association fetched {@link FetchType#LAZY}, is refused rather than followed or skipped. The walk
-     * records each dependent once, so a cycle ends with every type on it in the others' sets and adds
-     * nothing further.
+     * association fetched {@link FetchType#LAZY}, is refused rather than followed or skipped, on a
+     * registered type and on every unregistered type its eager associations reach. The walk records
+     * each dependent once, so a cycle ends with every type on it in the others' sets and adds nothing
+     * further.
      *
      * @param models the registered types
      * @return the transitive dependents of every type something links into
-     * @throws JpaException if a registered type declares a collection-valued, element-collection or
-     *         lazy association, or a link or association naming no model it can resolve to
+     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
+     *         associations, declares a collection-valued, element-collection or lazy association, or a
+     *         link or association naming no model it can resolve to
      */
     private static @NotNull ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> dependentsOf(
         @NotNull ConcurrentList<Class<JpaModel>> models
@@ -520,18 +527,7 @@ public final class JpaSession {
         //            .withValues(models)
         //            .withEdgeFunction(model -> {
         //                ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
-        //
-        //                for (FieldAccessor<?> field : fields) {
-        //                    String unfollowable = field.hasAnnotation(OneToMany.class) ? "@OneToMany"
-        //                        : field.hasAnnotation(ManyToMany.class) ? "@ManyToMany"
-        //                        : field.hasAnnotation(ElementCollection.class) ? "@ElementCollection"
-        //                        : field.getAnnotation(ManyToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @ManyToOne"
-        //                        : field.getAnnotation(OneToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @OneToOne"
-        //                        : null;
-        //
-        //                    if (unfollowable != null)
-        //                        throw new JpaException("Field '%s' of '%s' declares %s, which a held generation cannot follow", field.getName(), model.getName(), unfollowable);
-        //                }
+        //                refuseUnfollowable(models, model, model, "", Concurrent.newSet());
         //
         //                return Stream.concat(
         //                        JpaRepository.links(model).stream(),
@@ -549,18 +545,7 @@ public final class JpaSession {
 
         for (Class<JpaModel> model : models) {
             ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
-
-            for (FieldAccessor<?> field : fields) {
-                String unfollowable = field.hasAnnotation(OneToMany.class) ? "@OneToMany"
-                    : field.hasAnnotation(ManyToMany.class) ? "@ManyToMany"
-                    : field.hasAnnotation(ElementCollection.class) ? "@ElementCollection"
-                    : field.getAnnotation(ManyToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @ManyToOne"
-                    : field.getAnnotation(OneToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @OneToOne"
-                    : null;
-
-                if (unfollowable != null)
-                    throw new JpaException("Field '%s' of '%s' declares %s, which a held generation cannot follow", field.getName(), model.getName(), unfollowable);
-            }
+            refuseUnfollowable(models, model, model, "", Concurrent.newSet());
 
             Stream.concat(
                     JpaRepository.links(model).stream(),
@@ -588,6 +573,69 @@ public final class JpaSession {
         }
 
         return closed;
+    }
+
+    /**
+     * Refuses a type declaring a field a held generation cannot follow, then walks on through each of
+     * its single-valued associations into every unregistered type they reach.
+     *
+     * <p>An association this check leaves standing is eager, and reads its target with its owner
+     * whether or not the target is registered, so a lazy field there fails once the read has closed
+     * just as one on the registered type would. The walk stops at a registered type, which is checked
+     * as itself, and at a type it has already reached, so a cycle ends.
+     *
+     * @param models the registered types
+     * @param model the registered type the walk starts from
+     * @param type the type to check, {@code model} itself where the walk starts
+     * @param path the fields leading from {@code model} to {@code type}, joined by dots, empty where
+     *        the walk starts
+     * @param reached the unregistered types the walk has already checked
+     * @throws JpaException if the type, or one it reaches, declares a collection-valued,
+     *         element-collection or lazy association, or an association naming no model it can
+     *         resolve to
+     */
+    private static void refuseUnfollowable(
+        @NotNull ConcurrentList<Class<JpaModel>> models,
+        @NotNull Class<JpaModel> model,
+        @NotNull Class<? extends JpaModel> type,
+        @NotNull String path,
+        @NotNull ConcurrentSet<Class<?>> reached
+    ) {
+        ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(type).getFields();
+
+        for (FieldAccessor<?> field : fields) {
+            String unfollowable = field.hasAnnotation(OneToMany.class) ? "@OneToMany"
+                : field.hasAnnotation(ManyToMany.class) ? "@ManyToMany"
+                : field.hasAnnotation(ElementCollection.class) ? "@ElementCollection"
+                : field.getAnnotation(ManyToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @ManyToOne"
+                : field.getAnnotation(OneToOne.class).filter(association -> association.fetch() == FetchType.LAZY).isPresent() ? "a lazy @OneToOne"
+                : null;
+
+            if (unfollowable == null)
+                continue;
+
+            if (path.isEmpty())
+                throw new JpaException("Field '%s' of '%s' declares %s, which a held generation cannot follow", field.getName(), model.getName(), unfollowable);
+
+            throw new JpaException(
+                "Field '%s' of '%s', reached from '%s' through '%s', declares %s, which a held generation cannot follow",
+                field.getName(),
+                type.getName(),
+                model.getName(),
+                path,
+                unfollowable
+            );
+        }
+
+        for (FieldAccessor<?> field : fields) {
+            if (!field.hasAnnotation(ManyToOne.class) && !field.hasAnnotation(OneToOne.class))
+                continue;
+
+            Class<? extends JpaModel> target = JpaRepository.targetOf(field);
+
+            if (!models.contains(target) && reached.add(target))
+                refuseUnfollowable(models, model, target, path.isEmpty() ? field.getName() : path + "." + field.getName(), reached);
+        }
     }
 
     /**

@@ -56,9 +56,10 @@ public final class SessionManager {
      *
      * @param config the registered models and the source they are read from
      * @return the newly created and fully initialized session
-     * @throws JpaException if a registered type declares a collection-valued, element-collection or
-     *         lazy association, or a link or association naming no model it can resolve to, which is
-     *         refused before anything is read; or if a registered type fails to read or link
+     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
+     *         associations, declares a collection-valued, element-collection or lazy association, or a
+     *         link or association naming no model it can resolve to, which is refused before anything
+     *         is read; or if a registered type fails to read or link
      * @throws IllegalStateException if this manager holds no session and the JVM is already exiting
      */
     public @NotNull JpaSession connect(@NotNull JpaConfig config) {

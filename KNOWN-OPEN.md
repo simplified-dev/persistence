@@ -112,6 +112,23 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **GAP**
 > - Status: **OPEN** - needs the user's pushes and JitPack builds, `collections` first
 
+> #### The connect check does not see getters, embeddables or `@Any`
+> A session refuses to connect when a registered type, or an unregistered type its eager `@ManyToOne`
+> and `@OneToOne` fields reach, declares an association a held generation cannot follow. The check
+> reads fields only, and names only `@OneToMany`, `@ManyToMany`, `@ElementCollection` and a lazy
+> `@ManyToOne` or `@OneToOne`. A type mapped through property-access getters carries its
+> association annotations on the getters, which the check never reads, so it neither refuses a lazy
+> association there nor follows an eager one. The fields inside an `@Embedded` component are not
+> read, so a lazy association there is not refused and an eager one is not followed. Hibernate's
+> `@Any` and `@ManyToAny` are not among the annotations it names. Any of the three on a registered
+> type, or on a type it reaches, can put an uninitialized proxy or collection into a held
+> generation, which throws `LazyInitializationException` once the read that loaded it has closed.
+> No model in the workspace declares `@Embedded`, `@Access`, `@Any` or `@ManyToAny`.
+>
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:597` - `refuseUnfollowable`
+> - Type: **GAP**
+> - Status: **OPEN**
+
 > #### A queued corpus write skips the session's link check
 > `JpaSession.write` links an upsert's rows against the rows the session holds before anything reaches
 > the source, and refuses a row whose plain single-valued `@Linked` field carries no id or names no
