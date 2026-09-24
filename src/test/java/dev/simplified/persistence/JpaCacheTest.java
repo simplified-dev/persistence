@@ -106,6 +106,22 @@ class JpaCacheTest {
     }
 
     @Test
+    @DisplayName("a write to a parent rebuilds the children associated with it")
+    void aParentWriteRebuildsItsChildren() {
+        this.insertParentAndChild(1, "parent1", 10, "child1");
+
+        TestParentModel renamed = new TestParentModel();
+        renamed.setId(1);
+        renamed.setName("renamed");
+        this.session.write(WriteRequest.upsert(TestParentModel.class, List.of(renamed)));
+
+        // The child is not written, but it associates with the parent that was, so its held row
+        // follows the parent rather than keeping the name it was read with.
+        TestChildModel child = this.session.getRepository(TestChildModel.class).findAll().getFirst();
+        assertEquals("renamed", child.getParent().getName());
+    }
+
+    @Test
     @DisplayName("direct database access still consults the second-level cache")
     void cacheHitWithinExpiry() {
         this.insertParentAndChild(1, "parent1", 10, "child1");

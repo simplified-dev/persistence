@@ -26,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Covers how a session rebuilds a generation: nothing is published before its links resolve, a
- * failed rebuild publishes nothing and says so, and a write that names no rows rebuilds nothing.
+ * write rebuilds every type linking into the written one, a failed rebuild publishes nothing and says
+ * so, and a write that names no rows rebuilds nothing.
  */
 class JpaSessionRebuildTest {
 
@@ -92,6 +93,51 @@ class JpaSessionRebuildTest {
         assertThat(parents.getState(), equalTo(HydrationState.DEGRADED));
         assertThat(parents.getRows().getFirst(), sameInstance(before));
         assertThat(parents.getRows().getFirst().getName(), equalTo("one"));
+    }
+
+    @Test
+    @DisplayName("a write to a linked type rebuilds every type that links to it")
+    void aWriteRelinksItsDependents() {
+        int childReads = this.corpus.childReads.get();
+
+        this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno"))));
+
+        LinkedParent held = this.session.getRepository(LinkedParent.class).getRows().getFirst();
+        LinkedChild child = this.session.getRepository(LinkedChild.class).getRows().getFirst();
+
+        assertThat(held.getName(), equalTo("uno"));
+        assertThat(child.getParent(), sameInstance(held));
+        assertThat(this.corpus.childReads.get(), equalTo(childReads + 1));
+    }
+
+    @Test
+    @DisplayName("a write to a type nothing links to rebuilds that type alone")
+    void aWriteToALeafRebuildsOnlyItself() {
+        int parentReads = this.corpus.parentReads.get();
+        LinkedChild child = new LinkedChild();
+        child.setId("c2");
+        child.setParentId("p1");
+
+        this.session.write(WriteRequest.upsert(LinkedChild.class, List.of(child)));
+
+        assertThat(this.corpus.parentReads.get(), equalTo(parentReads));
+        assertThat(this.session.getRepository(LinkedChild.class).getRows(), hasSize(2));
+    }
+
+    @Test
+    @DisplayName("a dependent that fails to rebuild keeps the written type's previous generation too")
+    void aFailingDependentPublishesNothing() {
+        Repository<LinkedParent> parents = this.session.getRepository(LinkedParent.class);
+        Repository<LinkedChild> children = this.session.getRepository(LinkedChild.class);
+        LinkedParent before = parents.getRows().getFirst();
+        this.corpus.failing = LinkedChild.class;
+
+        assertThrows(JpaException.class, () -> this.session.write(WriteRequest.upsert(LinkedParent.class, List.of(parent("p1", "uno")))));
+
+        assertThat(parents.getState(), equalTo(HydrationState.DEGRADED));
+        assertThat(children.getState(), equalTo(HydrationState.DEGRADED));
+        assertThat(parents.getRows().getFirst(), sameInstance(before));
+        assertThat(children.getRows().getFirst().getParent(), sameInstance(before));
     }
 
     @Test
