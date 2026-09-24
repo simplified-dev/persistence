@@ -5,11 +5,13 @@ import com.google.gson.reflect.TypeToken;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.collection.ConcurrentSet;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Type;
+import java.util.Map;
 
 /**
  * A source reading each type out of the layers a {@link DocumentOrigin} names for it.
@@ -45,10 +47,22 @@ public sealed class DocumentSource implements Source {
         this.gson = gson;
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The layers fold in merge order into one insertion-ordered map, so the first layer sets the
+     * order and a later layer repeating a key replaces that row in place rather than appending a
+     * second one. That is what makes a companion file an override of the generated one rather than a
+     * second copy of it.
+     */
     @Override
     public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException {
-        return Concurrent.newUnmodifiableList(this.merge(type, this.layers(type)).values());
+        ConcurrentMap<String, T> merged = Concurrent.newLinkedMap();
+
+        for (String path : this.layers(type))
+            merged.putAll(this.rowsOf(type, path));
+
+        return Concurrent.newUnmodifiableList(merged.values());
     }
 
     /**
@@ -95,33 +109,21 @@ public sealed class DocumentSource implements Source {
     }
 
     /**
-     * Reads every layer of a type's document and keys the result.
-     *
-     * <p>Insertion order is the first layer's order, and a later layer repeating a key replaces
-     * that row in place rather than appending a second one. That is what makes a companion file
-     * an override of the generated one rather than a second copy of it.
+     * Reads one layer of a type's document and keys its rows.
      *
      * @param type the entity class
-     * @param layers the paths to read, in merge order
+     * @param path the layer to read
      * @param <T> the entity type
-     * @return the merged rows, keyed by their id
-     * @throws JpaException if a layer cannot be read
+     * @return the layer's rows keyed by their id, in the layer's order
+     * @throws JpaException if the layer cannot be read
      */
-    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> merge(
+    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> rowsOf(
         @NotNull Class<T> type,
-        @NotNull ConcurrentList<String> layers
+        @NotNull String path
     ) throws JpaException {
         Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
-        ConcurrentList<T> read = Concurrent.newList();
-
-        for (String path : layers) {
-            ConcurrentList<T> rows = this.gson.fromJson(this.origin.read(path), listType);
-
-            if (rows != null)
-                read.addAll(rows);
-        }
-
-        return JpaModel.keyed(type, read);
+        ConcurrentList<T> rows = this.gson.fromJson(this.origin.read(path), listType);
+        return rows == null ? Concurrent.newLinkedMap() : JpaModel.keyed(type, rows);
     }
 
     /**
@@ -152,31 +154,63 @@ public sealed class DocumentSource implements Source {
         /**
          * {@inheritDoc}
          *
-         * <p>A document is a whole file, so a write is: read the layers, apply the rows to the merged
-         * result, and rewrite the first layer carrying all of it. Granularity is the origin's problem
-         * rather than the caller's, and here the origin's granularity is the file.
+         * <p>A write rewrites the layer that owns each row it names, adds a row no layer carries to the
+         * last layer, and removes a deleted key from every layer. A layer it does not change is not
+         * written. A key's owner is the last layer carrying it, which is the one a read answers, and a
+         * new row goes last so that a regenerated first layer cannot drop it.
+         *
+         * <p>A layer is a whole file, so each changed layer is rewritten with its own rows as one
+         * origin write, handed the request's precondition. Granularity is the origin's problem rather
+         * than the caller's. Changed layers are written in merge order, so a delete that fails between
+         * two layers leaves the later layer's row, which is what a read answered before the write,
+         * rather than an older one.
          */
         @Override
         public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
             if (request.rows().isEmpty())
                 return;
 
-            ConcurrentList<String> layers = this.layers(request.type());
-            ConcurrentMap<String, T> merged = this.merge(request.type(), layers);
-            ConcurrentMap<String, T> applied = JpaModel.keyed(request.type(), request.rows());
+            Class<T> type = request.type();
+            ConcurrentList<String> paths = this.layers(type);
+            ConcurrentMap<String, ConcurrentMap<String, T>> held = Concurrent.newMap();
+            ConcurrentSet<String> changed = Concurrent.newSet();
 
-            if (request.operation() == WriteRequest.Operation.DELETE)
-                applied.keySet().forEach(merged::remove);
-            else
-                merged.putAll(applied);
+            for (String path : paths)
+                held.put(path, this.rowsOf(type, path));
 
-            Type listType = TypeToken.getParameterized(ConcurrentList.class, request.type()).getType();
+            for (Map.Entry<String, T> entry : JpaModel.keyed(type, request.rows()).entrySet()) {
+                String key = entry.getKey();
 
-            this.writes.write(
-                layers.getFirst(),
-                this.gson.toJson(Concurrent.newUnmodifiableList(merged.values()), listType),
-                request.getPrecondition()
-            );
+                if (request.operation() == WriteRequest.Operation.DELETE) {
+                    for (String path : paths) {
+                        if (held.get(path).remove(key) != null)
+                            changed.add(path);
+                    }
+                } else {
+                    String owner = paths.getLast();
+
+                    for (String path : paths) {
+                        if (held.get(path).containsKey(key))
+                            owner = path;
+                    }
+
+                    held.get(owner).put(key, entry.getValue());
+                    changed.add(owner);
+                }
+            }
+
+            Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
+
+            for (String path : paths) {
+                if (!changed.contains(path))
+                    continue;
+
+                this.writes.write(
+                    path,
+                    this.gson.toJson(Concurrent.newUnmodifiableList(held.get(path).values()), listType),
+                    request.getPrecondition()
+                );
+            }
         }
 
     }

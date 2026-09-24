@@ -65,9 +65,9 @@ public interface Source {
         /**
          * Applies one write to the origin.
          *
-         * <p>Granularity is the origin's concern. A document source reads its current layers, applies
-         * the request and rewrites the file; a relational source applies the rows one at a time.
-         * Neither leaks into the request.
+         * <p>Granularity is the origin's concern. A document source rewrites the files whose rows it
+         * changes; a relational source applies the rows one at a time. Neither leaks into the
+         * request.
          *
          * <p>A write here reaches the origin and nothing else. A session holding the type keeps
          * serving the rows it read, so a registered type is written through

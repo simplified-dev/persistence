@@ -59,32 +59,23 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **GAP**
 > - Status: **OPEN** - needs pushes and JitPack builds in dependency order, `collections` first
 
-> #### A document write to an overridden key is reverted by its own rebuild
-> `DocumentSource.Writable.write` merges every layer, applies the request and rewrites the first layer
-> with the whole merged set; the later layers are untouched. The rebuild that follows merges again and
-> the later layer wins, so an upsert of a key an override layer carries is reverted, and a delete of
-> one reappears. The copy into the first layer is pinned as intended by
-> `DocumentLayerMergeTest.writeCarriesTheWholeDocument`; the revert is not tested.
->
-> - Affected: `src/main/java/dev/simplified/persistence/source/DocumentSource.java:160` - `write`
-> - Type: **BUG**
-> - Status: **OPEN**
-
 > #### A document write can overwrite a concurrent commit
 > No production write names a precondition - nothing answers a caller a revision it could name - so
 > `CorpusOrigin.Writing` asks GitHub for the file's current blob sha at the moment it writes, after
-> the merge read. A commit landing after the body was read is overwritten with a merge of the older
-> content. The window is wider than the gap between the two reads: `CorpusOrigin.Writing` polls the
+> `DocumentSource` has read the layer. A commit landing after the body was read is overwritten with
+> the older body plus the write. The window is wider than the gap between the two reads: `CorpusOrigin.Writing` polls the
 > branch tip before it resolves a write's layers and reads the body at that tip, but the tip read goes
 > through a client whose response cache replays it for up to a minute, and the sha is resolved at the
 > branch through a second client with a cache of its own, so the body can be up to a minute older
 > than the sha it is written under. The javadoc of `DocumentOrigin.Writable.write`, and of its override in
 > `CorpusOrigin.Writing`, says a moved path refuses the write. `WriteRequest` says a GitHub source
 > retries when the origin has moved, and nothing retries. `Source.Writable.write` promises a
-> precondition no production write carries.
+> precondition no production write carries, and `DocumentSource.Writable.write` hands the one
+> precondition a request names to every layer it rewrites, where a blob sha names only one file.
 >
 > - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
 >   `Writing.write`, javadoc at `:144-146`, `:131` - `Writing.layersOf`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:169` - `Writable.write`;
 >   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:91` - `Writable.write`, javadoc
 >   at `:77-80`;
 >   `src/main/java/dev/simplified/persistence/source/WriteRequest.java:30` - `precondition`, class

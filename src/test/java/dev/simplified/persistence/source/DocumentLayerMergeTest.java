@@ -11,11 +11,13 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -38,6 +40,7 @@ class DocumentLayerMergeTest {
     private static final class Layers implements DocumentOrigin.Writable {
 
         private final @NotNull ConcurrentMap<String, String> bodies = Concurrent.newLinkedMap();
+        private final @NotNull ConcurrentList<String> written = Concurrent.newList();
         private @NotNull Optional<String> precondition = Optional.empty();
 
         private Layers(@NotNull String @NotNull ... bodies) {
@@ -61,6 +64,7 @@ class DocumentLayerMergeTest {
         @Override
         public void write(@NotNull String path, @NotNull String content, @NotNull Optional<String> precondition) {
             this.bodies.put(path, content);
+            this.written.add(path);
             this.precondition = precondition;
         }
 
@@ -141,8 +145,8 @@ class DocumentLayerMergeTest {
     }
 
     @Test
-    @DisplayName("a write rewrites the first layer carrying every layer's rows")
-    void writeCarriesTheWholeDocument() {
+    @DisplayName("a new row lands in the last layer, and the first is not written")
+    void newRowLandsInTheLastLayer() {
         Layers origin = new Layers(
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
@@ -151,13 +155,74 @@ class DocumentLayerMergeTest {
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("C", "c"))));
 
-        // The second layer is untouched, so a re-read would see B twice if the first layer had been
-        // rewritten with only what the request named.
-        assertThat(origin.bodies.get("layer-1.json"), equalTo("[{\"id\":\"B\",\"name\":\"b\"}]"));
+        assertThat(origin.written, contains("layer-1.json"));
+        assertThat(origin.bodies.get("layer-0.json"), equalTo("[{\"id\":\"A\",\"name\":\"a\"}]"));
+        assertThat(idsIn(origin, "layer-1.json"), contains("B", "C"));
         assertThat(
             source.read(LayeredRow.class).stream().map(LayeredRow::getId).toList(),
             contains("A", "B", "C")
         );
+    }
+
+    @Test
+    @DisplayName("an upsert of an overridden key lands in the override, so the read answers it")
+    void overriddenUpsertLandsInTheOverride() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
+            "[{\"id\":\"B\",\"name\":\"b1\"}]"
+        );
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+
+        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b2"))));
+
+        assertThat(origin.written, contains("layer-1.json"));
+        assertThat(
+            origin.bodies.get("layer-0.json"),
+            equalTo("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]")
+        );
+
+        ConcurrentList<LayeredRow> rows = source.read(LayeredRow.class);
+
+        assertThat(rows.stream().map(LayeredRow::getId).toList(), contains("A", "B"));
+        assertThat(rows.getLast().getName(), equalTo("b2"));
+    }
+
+    @Test
+    @DisplayName("a delete of an overridden key leaves no layer carrying it, writing both in merge order")
+    void overriddenDeleteLeavesNoLayerCarryingIt() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
+            "[{\"id\":\"B\",\"name\":\"b1\"}]"
+        );
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+
+        source.write(WriteRequest.delete(LayeredRow.class, List.of(row("B", "b1"))));
+
+        assertThat(origin.written, contains("layer-0.json", "layer-1.json"));
+        assertThat(idsIn(origin, "layer-0.json"), contains("A"));
+        assertThat(idsIn(origin, "layer-1.json"), is(empty()));
+        assertThat(source.read(LayeredRow.class).stream().map(LayeredRow::getId).toList(), contains("A"));
+    }
+
+    @Test
+    @DisplayName("a write naming only keys the first layer owns leaves the override unwritten")
+    void firstLayerWriteLeavesTheOverrideUnwritten() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
+            "[{\"id\":\"C\",\"name\":\"c\"}]"
+        );
+        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+
+        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "a2"))));
+
+        assertThat(origin.written, contains("layer-0.json"));
+        assertThat(idsIn(origin, "layer-0.json"), contains("A", "B"));
+        assertThat(origin.bodies.get("layer-1.json"), equalTo("[{\"id\":\"C\",\"name\":\"c\"}]"));
+
+        ConcurrentList<LayeredRow> rows = source.read(LayeredRow.class);
+
+        assertThat(rows.stream().map(LayeredRow::getId).toList(), contains("A", "B", "C"));
+        assertThat(rows.getFirst().getName(), equalTo("a2"));
     }
 
     @Test
@@ -219,6 +284,12 @@ class DocumentLayerMergeTest {
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b"))));
 
         assertThat(origin.precondition.isEmpty(), is(true));
+    }
+
+    private static @NotNull List<String> idsIn(@NotNull Layers origin, @NotNull String path) {
+        return Arrays.stream(GSON.fromJson(origin.bodies.get(path), LayeredRow[].class))
+            .map(LayeredRow::getId)
+            .toList();
     }
 
     private static @NotNull LayeredRow row(@NotNull String id, @NotNull String name) {

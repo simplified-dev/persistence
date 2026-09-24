@@ -80,8 +80,7 @@ public interface JpaModel extends Serializable {
     /**
      * Indexes rows by their key, in the order they arrive.
      *
-     * <p>A repeated key replaces the row in place rather than appending a second one, which is what
-     * makes a later document layer an override of an earlier one.
+     * <p>A repeated key replaces the row in place rather than appending a second one.
      *
      * @param type the model class
      * @param rows the rows to index
