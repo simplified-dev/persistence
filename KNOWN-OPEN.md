@@ -72,8 +72,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > the documents spell the key `stone`; bound, two reforge stones name no item. `02-flow.md` §5.4 says
 > the type should fail; the spine reserved the decision and it is still reserved.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:241` - `resolveLinks`, which
->   assigns the miss at `:267`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaRepository.java:261` - `resolveLinks`, which
+>   assigns the miss at `:287`
 > - Type: **RISK**
 > - Status: **OPEN** - the policy is undecided, per spine §12
 
@@ -88,15 +88,16 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > the same row that lands during the backoff. The bot's `LinkCommand` and `RepGiveCommand` let the
 > same throw escape the command for a row that was saved.
 >
-> Only a cadence retries the rebuild itself, and no corpus type declares one. A type without a
-> `@Hydration` cadence that fails to rebuild stays `DEGRADED`, serving its pre-write rows, until
-> another write reaches its rebuild set or a type it links into comes due on its own cadence. The
-> corpus writer's session serves no reads - `data` connects it on a private `SessionManager` and only
-> writes through it - so there the re-apply recovers a generation nobody reads; the stale rows matter
-> where a written session is also read, which today is the bot's.
+> Only a cadence retries the rebuild itself. Every corpus type declares a ten-minute one, and a tick
+> re-reads a `DEGRADED` type whatever its fingerprint says, so a corpus type that fails to rebuild
+> serves its pre-write rows until its next tick. A type without a `@Hydration` cadence stays
+> `DEGRADED` until another write reaches its rebuild set or a type it links into is rebuilt on its
+> own cadence. The corpus writer's session serves no reads - `data` connects it on a private
+> `SessionManager` and only writes through it - so there the re-apply recovers a generation nobody
+> reads; the stale rows matter where a written session is also read, which today is the bot's.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:265` - `write(WriteRequest)`,
->   `:147` - `hydrate(ConcurrentList)`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:366` - `write(WriteRequest)`,
+>   `:164` - `hydrate(ConcurrentList)`;
 >   `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:192` - `apply`,
 >   which reschedules at `:214`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:46` - `process`, which
@@ -104,8 +105,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepGiveCommand.java:45` -
 >   `process`, which writes at `:84`
 > - Type: **RISK**
-> - Status: **OPEN** - the write and its rebuild report through one exception, and a failed rebuild is
->   not retried
+> - Status: **OPEN** - the write and its rebuild report through one exception, and only a cadence
+>   retries a failed rebuild
 
 > #### A collection-valued association is not followed by the rebuild rule
 > A write rebuilds every type linking into the written one through a `@Linked` field, or a field
@@ -122,8 +123,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > `ClassCastException` out of `connect` rather than a `JpaException`. No `@Linked` field in the
 > workspace has one.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:333` - `dependentsOf`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:319` - `targetOf`;
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:443` - `dependentsOf`;
+>   `src/main/java/dev/simplified/persistence/JpaRepository.java:339` - `targetOf`;
 >   `src/main/java/dev/simplified/persistence/source/RelationalSource.java:239` - `read`
 > - Type: **GAP**
 > - Status: **OPEN** - no model needs it yet
@@ -135,7 +136,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > one reappears. The copy into the first layer is pinned as intended by
 > `DocumentLayerMergeTest.writeCarriesTheWholeDocument`; the revert is not tested.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/source/DocumentSource.java:133` - `write`
+> - Affected: `src/main/java/dev/simplified/persistence/source/DocumentSource.java:160` - `write`
 > - Type: **BUG**
 > - Status: **OPEN**
 
@@ -143,24 +144,25 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > No production write names a precondition - nothing answers a caller a revision it could name - so
 > `CorpusOrigin.Writing` asks GitHub for the file's current blob sha at the moment it writes, after
 > the merge read. A commit landing after the body was read is overwritten with a merge of the older
-> content. The window is wider than the gap between the two reads: `GitHubCorpus` reads the body
-> through a client whose response cache replays a file for up to a minute, and resolves the sha
-> through a second client with a cache of its own, so the body can be up to a minute older than the
-> sha it is written under. The javadoc of `DocumentOrigin.Writable.write`, and of its override in
+> content. The window is wider than the gap between the two reads: `CorpusOrigin.Writing` polls the
+> branch tip before it resolves a write's layers and reads the body at that tip, but the tip read goes
+> through a client whose response cache replays it for up to a minute, and the sha is resolved at the
+> branch through a second client with a cache of its own, so the body can be up to a minute older
+> than the sha it is written under. The javadoc of `DocumentOrigin.Writable.write`, and of its override in
 > `CorpusOrigin.Writing`, says a moved path refuses the write. `WriteRequest` says a GitHub source
 > retries when the origin has moved, and nothing retries. `Source.Writable.write` promises a
 > precondition no production write carries.
 >
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:98` -
->   `Writing.write`, javadoc at `:93-95`;
->   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:71` - `Writable.write`, javadoc
->   at `:57-60`;
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
+>   `Writing.write`, javadoc at `:144-146`, `:131` - `Writing.layersOf`;
+>   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:91` - `Writable.write`, javadoc
+>   at `:77-80`;
 >   `src/main/java/dev/simplified/persistence/source/WriteRequest.java:30` - `precondition`, class
 >   javadoc at `:14-16`;
->   `src/main/java/dev/simplified/persistence/source/Source.java:60` - `Writable.write`, `@throws` at
->   `:57-58`;
->   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:98` - `read`, `:109` -
->   `metadata`
+>   `src/main/java/dev/simplified/persistence/source/Source.java:81` - `Writable.write`, `@throws` at
+>   `:78-79`;
+>   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:147` -
+>   `read(String, String)`, `:158` - `metadata`, `:257` - `poll`
 > - Type: **BUG**
 > - Status: **OPEN**
 
@@ -175,35 +177,17 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > does not refuse a type an active session already registers, so the second call re-reads every type
 > into a session behind the first, which every lookup and write still reaches first.
 >
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:45` -
->   `sessionManager` and its generated getter, `:95` - `connect()`;
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:52` -
+>   `sessionManager` and its generated getter, `:105` - `connect()`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:48` - `main`;
 >   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java:19` -
 >   `testPlanExecutionStarted`, `:26` - `testPlanExecutionFinished`;
->   `Simplified-Api/skyblock/src/test/java/api/simplified/skyblock/LocalSkyBlockData.java:92` -
->   `connect`, `:104` - `disconnect`;
+>   `Simplified-Api/skyblock/src/test/java/api/simplified/skyblock/LocalSkyBlockData.java:93` -
+>   `connect`, `:105` - `disconnect`;
 >   `Simplified-Api/hypixel/src/test/java/api/simplified/hypixel/response/skyblock/stats/LocalSkyBlockData.java:110`
 >   - `connect`, `:122` - `disconnect`
 > - Type: **RISK**
 > - Status: **OPEN**
-
-> #### A moved document has no route into a session
-> The writer's poller computes which corpus documents moved and discards the answer, and the poll
-> swaps the catalogue the writer's `CorpusOrigin` reads. That session serves no reads, though - `data`
-> answers only `/actuator/prometheus` - and the sessions that do, the read-only ones
-> `SkyBlockData.connect()` registers in `bot`, have no poller at all. A session learns of a moved
-> document only when a write's rebuild covers its type or a `@Hydration` tick comes due, and no corpus
-> type declares one. The rebuild rule says what to rebuild once a moved type is known - that type
-> and every type linking into it - but not how the session is told: a fourth `DocumentOrigin` question
-> the session asks, a fingerprint entry the deployment calls, which invariant 5 requires to rebuild
-> nothing when repeated, or not at all.
->
-> - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/poller/CorpusPoller.java` -
->   `scheduled()` at `:66-77` discards what `poll()` at `:84-111` returns;
->   `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:95` - `connect()`;
->   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java`
-> - Type: **GAP**
-> - Status: **OPEN** - the route is undecided
 
 > #### `bot` does not build, for reasons that predate this work
 > `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so its write sites and its

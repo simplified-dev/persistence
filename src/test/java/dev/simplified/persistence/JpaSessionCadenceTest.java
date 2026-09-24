@@ -9,6 +9,7 @@ import dev.simplified.persistence.cadence.OffTickRow;
 import dev.simplified.persistence.cadence.StaleRow;
 import dev.simplified.persistence.cadence.TickRow;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.source.WriteRequest;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.ref.WeakReference;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
@@ -46,6 +48,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * later tick recovers it, a generation standing past its stale threshold reports it on read while one
  * whose cadence falls between two ticks never does, and a shut-down session stops reading and is
  * released.
+ *
+ * <p>Against a source that fingerprints its types, a tick reads only what moved: an unmoved due type
+ * is confirmed rather than read however often the cadence ticks, a moved one is rebuilt with its
+ * dependents, a {@link HydrationState#DEGRADED} one is read whatever its fingerprint says, and a
+ * change landing while the session connects or a write the session applies is read at the next tick.
  *
  * <p>Every wait is bounded and polls for the state it needs, so none of the cases rests on a tick
  * landing inside a fixed sleep.
@@ -121,6 +128,15 @@ class JpaSessionCadenceTest {
 
     private @NotNull JpaSession connect(@NotNull Class<?>... types) {
         return this.sessionManager.connect(new JpaConfig(models(types), this.corpus));
+    }
+
+    /**
+     * Has the source answer a fingerprint for the cadenced row and its dependent, so every tick finds
+     * both unmoved until a case moves one.
+     */
+    private void fingerprintBoth() {
+        this.corpus.fingerprints.put(CadencedRow.class, "row-one");
+        this.corpus.fingerprints.put(CadencedDependent.class, "dependent-one");
     }
 
     @Test
@@ -235,6 +251,164 @@ class JpaSessionCadenceTest {
             assertThat(rows.getState(), not(equalTo(HydrationState.STALE)));
             return this.corpus.readsOf(OffTickRow.class) >= reads + 2;
         }, "the off-tick type was never rebuilt twice");
+    }
+
+    @Test
+    @DisplayName("a due type whose fingerprint has not moved is not read, and keeps the generation it was published")
+    void anUnmovedDueTypeIsNotRead() {
+        this.fingerprintBoth();
+        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
+        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
+        CadencedRow connected = rows.getRows().getFirst();
+        Instant connectedAt = rows.getHydratedAt();
+        int asks = this.corpus.asks();
+
+        // Ticks run one at a time, so the second ask after the connect follows a whole tick.
+        awaitUntil(() -> this.corpus.asks() >= asks + 2, "no tick asked the source for fingerprints");
+
+        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(1));
+        assertThat(rows.getRows().getFirst(), sameInstance(connected));
+        assertThat(rows.getHydratedAt(), equalTo(connectedAt));
+        assertThat(rows.getState(), equalTo(HydrationState.CURRENT));
+    }
+
+    @Test
+    @DisplayName("ticking repeatedly against an unmoved origin reads nothing, and the checks keep the generation from reporting STALE")
+    void repeatedTicksAgainstAnUnmovedOriginReadNothing() {
+        this.fingerprintBoth();
+        Repository<CadencedRow> rows = this.connect(CadencedRow.class, CadencedDependent.class)
+            .getRepository(CadencedRow.class)
+            .orElseThrow();
+        int asks = this.corpus.asks();
+
+        // Five ticks outlast the row's stale threshold several times over, so a check that did not
+        // restart it would show here as STALE.
+        awaitUntil(() -> {
+            assertThat(rows.getState(), equalTo(HydrationState.CURRENT));
+            return this.corpus.asks() >= asks + 5;
+        }, "the cadence stopped asking");
+
+        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(1));
+        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(1));
+    }
+
+    @Test
+    @DisplayName("a due type whose fingerprint moved is rebuilt with every type linking into it, once")
+    void aMovedTypeIsRebuiltWithItsDependents() {
+        this.fingerprintBoth();
+        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
+        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
+        Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();
+        Instant connectedAt = rows.getHydratedAt();
+
+        this.corpus.name = "two";
+        this.corpus.fingerprints.put(CadencedRow.class, "row-two");
+
+        awaitUntil(() -> rows.getRows().getFirst().getName().equals("two"), "the moved type was never re-read");
+
+        // Shutting down waits for the rebuild in flight, so the generations read below are the ones
+        // that rebuild published, and the counts are final.
+        this.sessionManager.shutdown();
+
+        CadencedRow held = rows.getRows().getFirst();
+        assertThat(dependents.getRows().getFirst().getRow(), sameInstance(held));
+        assertThat(rows.getHydratedAt(), greaterThan(connectedAt));
+        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(2));
+        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(2));
+    }
+
+    @Test
+    @DisplayName("a source that fingerprints nothing has every due type read at every tick")
+    void aSourceThatFingerprintsNothingRebuildsEveryDueType() {
+        this.connect(CadencedRow.class, CadencedDependent.class);
+        int reads = this.corpus.readsOf(CadencedRow.class);
+        int dependentReads = this.corpus.readsOf(CadencedDependent.class);
+        int asks = this.corpus.asks();
+
+        awaitUntil(() -> this.corpus.readsOf(CadencedRow.class) >= reads + 2, "the unfingerprinted type was not re-read");
+
+        assertThat(this.corpus.name, equalTo("one"));
+        assertThat(this.corpus.asks(), greaterThan(asks));
+        assertThat(this.corpus.readsOf(CadencedDependent.class), greaterThan(dependentReads));
+    }
+
+    @Test
+    @DisplayName("a DEGRADED type is read at every tick even while its fingerprint matches the one its rows were read under")
+    void aDegradedTypeIsReadEvenWhenUnmoved() {
+        this.fingerprintBoth();
+        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
+        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
+        Repository<CadencedDependent> dependents = session.getRepository(CadencedDependent.class).orElseThrow();
+
+        this.corpus.failing = CadencedRow.class;
+        this.corpus.fingerprints.put(CadencedRow.class, "row-two");
+        awaitUntil(() -> rows.getState() == HydrationState.DEGRADED, "the moved type's failed rebuild never left it DEGRADED");
+
+        // The source answers the fingerprint the held rows were read under again, so only the
+        // failed rebuild sends the type back to it. A tick already past its ask may fail once more
+        // under the old answer, so the second failure from here is the one asked under this one.
+        this.corpus.fingerprints.put(CadencedRow.class, "row-one");
+        int failures = this.corpus.failuresOf(CadencedRow.class);
+        awaitUntil(() -> this.corpus.failuresOf(CadencedRow.class) >= failures + 2, "an unmoved DEGRADED type was not read again");
+
+        this.corpus.failing = null;
+        awaitUntil(
+            () -> rows.getState() == HydrationState.CURRENT && dependents.getState() == HydrationState.CURRENT,
+            "no later tick restored CURRENT"
+        );
+        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(2));
+    }
+
+    @Test
+    @DisplayName("a change landing while the session connects is read at the next tick")
+    void aChangeDuringConnectIsPickedUpByTheNextTick() {
+        this.fingerprintBoth();
+
+        // The change lands once the connect has read the row and before it reads the dependent, so
+        // a fingerprint asked after the read would already name it and the row would never be read
+        // again.
+        this.corpus.afterRead = type -> {
+            if (type != CadencedRow.class)
+                return;
+
+            this.corpus.afterRead = null;
+            this.corpus.name = "two";
+            this.corpus.fingerprints.put(CadencedRow.class, "row-two");
+        };
+
+        Repository<CadencedRow> rows = this.connect(CadencedRow.class, CadencedDependent.class)
+            .getRepository(CadencedRow.class)
+            .orElseThrow();
+        assertThat(rows.getRows().getFirst().getName(), equalTo("one"));
+
+        awaitUntil(() -> rows.getRows().getFirst().getName().equals("two"), "the change made during the connect never reached the session");
+    }
+
+    @Test
+    @DisplayName("a write leaves every type it rebuilt to be read once more at the next tick, whatever the fingerprint says")
+    void aWriteIsReadAgainAtTheNextTick() {
+        this.fingerprintBoth();
+        JpaSession session = this.connect(CadencedRow.class, CadencedDependent.class);
+        Repository<CadencedRow> rows = session.getRepository(CadencedRow.class).orElseThrow();
+        CadencedRow written = new CadencedRow();
+        written.setId("r1");
+        written.setName("two");
+
+        session.write(WriteRequest.upsert(CadencedRow.class, List.of(written)));
+        assertThat(rows.getRows().getFirst().getName(), equalTo("two"));
+        int reads = this.corpus.readsOf(CadencedRow.class);
+        int dependentReads = this.corpus.readsOf(CadencedDependent.class);
+
+        // The source never moves the fingerprint, the way a catalogue lags the commit, so only the
+        // forgotten fingerprint sends the written type and its dependent back to it.
+        awaitUntil(() -> this.corpus.readsOf(CadencedRow.class) > reads, "the written type was not read again at its next tick");
+
+        // That read records the answer again, so the ticks after it read nothing.
+        int asks = this.corpus.asks();
+        awaitUntil(() -> this.corpus.asks() >= asks + 2, "the cadence stopped asking");
+        assertThat(this.corpus.readsOf(CadencedRow.class), equalTo(reads + 1));
+        assertThat(this.corpus.readsOf(CadencedDependent.class), equalTo(dependentReads + 1));
     }
 
     @Test

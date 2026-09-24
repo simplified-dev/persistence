@@ -39,6 +39,11 @@ import java.util.stream.Stream;
  * an association holds a copy read with its owner that carries the target's current row. Publication
  * is per type, so a reader between two types' publication sees one new generation and one old.
  *
+ * <p>The session records the fingerprint its source answered for each type before the read that
+ * produced the held generation. A {@link Hydration} tick asks again and reads only the due types
+ * whose fingerprint moved, so a tick against an origin that has not moved reads nothing. A source
+ * that cannot fingerprint answers nothing, and every due type is read.
+ *
  * <p>The session never asks what kind of source it holds, so nothing here reaches Hibernate. A
  * database is opened by the caller, who keeps it for Hibernate access. Closing it is optional - the
  * JVM closes one still open at exit - and a caller closing it earlier shuts this session down first,
@@ -47,9 +52,9 @@ import java.util.stream.Stream;
  * <p>Typical lifecycle managed by {@link SessionManager}:</p>
  * <ol>
  *     <li><b>Construction</b> - no I/O</li>
- *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per registered type, hydrates
- *         every one of them, and builds the scheduler that ticks when some type declares a
- *         {@link Hydration} cadence</li>
+ *     <li>{@link #cacheRepositories()} - creates a {@link JpaRepository} per registered type, asks the
+ *         source for their fingerprints, hydrates every one of them, and builds the scheduler that
+ *         ticks when some type declares a {@link Hydration} cadence</li>
  *     <li>{@link #shutdown()} - clears repositories and shuts down the scheduler, if one was built</li>
  * </ol>
  *
@@ -79,6 +84,12 @@ public final class JpaSession {
     private final @NotNull ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> dependents;
 
     /**
+     * The fingerprint the source answered for each type before the read that produced its held
+     * generation, absent where the source answered none or a write has rebuilt the type since.
+     */
+    private final @NotNull ConcurrentMap<Class<JpaModel>, String> fingerprints = Concurrent.newMap();
+
+    /**
      * The scheduler driving {@link Hydration} cadences, built only when some registered type declares
      * one.
      */
@@ -102,16 +113,20 @@ public final class JpaSession {
     /**
      * Creates a {@link JpaRepository} for each registered model and performs the initial data load.
      *
+     * <p>The source is asked for every type's fingerprint before the read, and the answer is recorded
+     * once the read succeeds. Asked after it, the answer could name a change that landed during the
+     * read and that the read never saw, and the first tick would take the stale rows as current.
+     *
      * <p>Once every type holds a generation, a session with a type declaring a {@link Hydration}
      * cadence builds its scheduler and ticks at the shortest cadence declared. Called once, by
      * {@link SessionManager#connect(JpaConfig)}.
      *
-     * @throws JpaException if any registered type fails to hydrate
+     * @throws JpaException if the source cannot be asked, or any registered type fails to hydrate
      */
     void cacheRepositories() {
         // A type asks for a cadence through @Hydration. The tick runs at the shortest declared
-        // interval and rebuilds only what has come due, with every type linking into it, and each
-        // repository measures its default stale threshold in ticks.
+        // interval and checks only what has come due, rebuilding what moved with every type
+        // linking into it, and each repository measures its default stale threshold in ticks.
         long tickMs = this.config.models()
             .stream()
             .mapToLong(model -> JpaRepository.intervalOf(model).toMillis())
@@ -122,7 +137,9 @@ public final class JpaSession {
         for (Class<JpaModel> model : this.config.models())
             this.repositories.put(model, new JpaRepository<>(model, Duration.ofMillis(tickMs)));
 
+        ConcurrentMap<Class<? extends JpaModel>, String> asked = this.config.source().fingerprints(this.config.models());
         this.hydrate(this.config.models());
+        this.record(asked, this.config.models());
 
         if (tickMs > 0) {
             this.scheduler = new Scheduler();
@@ -210,12 +227,23 @@ public final class JpaSession {
     }
 
     /**
-     * Rebuilds every type whose {@link Hydration} cadence has come due, together with every type
-     * linking into them.
+     * Checks every type whose {@link Hydration} cadence has come due against its source, and
+     * rebuilds the ones that moved together with every type linking into them.
      *
-     * <p>A rebuild that fails is logged with the types it covered. Each of them is left
-     * {@link HydrationState#DEGRADED} on its previous generation and is due again at the next tick, so
-     * the cadence outlives the failure. An {@link Error} is not caught, and ends the cadence.
+     * <p>The source is asked once for the fingerprints of the due types and every type linking into
+     * them. A due type whose fingerprint equals the one its held generation was read under, and which
+     * reports {@link HydrationState#CURRENT} or {@link HydrationState#STALE}, is not read: it is
+     * confirmed, which restarts its cadence and its stale threshold and leaves
+     * {@link Repository#getHydratedAt()} at the generation's publication. A due type whose
+     * fingerprint moved, that the answer leaves out, or that a failed rebuild left
+     * {@link HydrationState#DEGRADED} is rebuilt, and every type the rebuild covers records the
+     * fingerprint it was asked under once the rebuild publishes.
+     *
+     * <p>A failure is logged with the types it reached. A rebuild that fails leaves each type it
+     * covered {@link HydrationState#DEGRADED} on its previous generation and due again at the next
+     * tick. A source that cannot be asked leaves every due type unchecked, so one that stays
+     * unreachable shows as {@link HydrationState#STALE}. Either way the cadence outlives the failure.
+     * An {@link Error} is not caught, and ends the cadence.
      */
     private synchronized void hydrateDue() {
         if (!this.active)
@@ -229,14 +257,82 @@ public final class JpaSession {
         if (due.isEmpty())
             return;
 
+        ConcurrentMap<Class<? extends JpaModel>, String> asked;
+
         try {
-            this.hydrate(due);
+            asked = this.config.source().fingerprints(this.covering(due));
+        } catch (RuntimeException exception) {
+            log.error(
+                "A background check could not ask the source about {}, which stay unchecked on their generation",
+                due.stream().map(Class::getName).collect(Collectors.joining(", ")),
+                exception
+            );
+            return;
+        }
+
+        ConcurrentList<Class<JpaModel>> moved = due.stream()
+            .filter(type -> !this.isUnmoved(type, asked))
+            .collect(Concurrent.toList());
+        ConcurrentList<Class<JpaModel>> rebuilt = this.covering(moved);
+
+        due.stream()
+            .filter(type -> !rebuilt.contains(type))
+            .forEach(type -> this.repositories.get(type).confirm());
+
+        if (moved.isEmpty())
+            return;
+
+        try {
+            this.hydrate(moved);
+            this.record(asked, rebuilt);
         } catch (RuntimeException exception) {
             log.error(
                 "A background rebuild failed and left {} on their previous generation",
-                this.covering(due).stream().map(Class::getName).collect(Collectors.joining(", ")),
+                rebuilt.stream().map(Class::getName).collect(Collectors.joining(", ")),
                 exception
             );
+        }
+    }
+
+    /**
+     * Whether a due type can keep its held generation: the source answered the fingerprint that
+     * generation was read under, and the last rebuild covering the type published.
+     *
+     * @param type the due type
+     * @param asked the fingerprints the source answered for this tick
+     * @return {@code true} when the type need not be read
+     */
+    private boolean isUnmoved(
+        @NotNull Class<JpaModel> type,
+        @NotNull ConcurrentMap<Class<? extends JpaModel>, String> asked
+    ) {
+        String fingerprint = asked.get(type);
+        HydrationState state = this.repositories.get(type).getState();
+
+        return fingerprint != null
+            && fingerprint.equals(this.fingerprints.get(type))
+            && (state == HydrationState.CURRENT || state == HydrationState.STALE);
+    }
+
+    /**
+     * Records the fingerprint each type was read under, forgetting it for a type the answer left
+     * out, so a type is only ever skipped against a fingerprint taken before its held rows were
+     * read.
+     *
+     * @param asked the fingerprints the source answered before the read
+     * @param types the types the read published
+     */
+    private void record(
+        @NotNull ConcurrentMap<Class<? extends JpaModel>, String> asked,
+        @NotNull ConcurrentList<Class<JpaModel>> types
+    ) {
+        for (Class<JpaModel> type : types) {
+            String fingerprint = asked.get(type);
+
+            if (fingerprint == null)
+                this.fingerprints.remove(type);
+            else
+                this.fingerprints.put(type, fingerprint);
         }
     }
 
@@ -249,6 +345,11 @@ public final class JpaSession {
      * keep the instances it was linked to before. It is driven by the write rather than by a caller
      * asking for it, and a request naming no rows writes and rebuilds nothing, so nothing downstream
      * gains a way to force a rehydration.
+     *
+     * <p>The rebuild forgets the fingerprint each type it covered was read under. An origin's
+     * catalogue can lag the commit it describes, so an answer the source gives now may still name
+     * the rows before the write; forgetting it leaves each of those types to be read again at its
+     * next {@link Hydration} tick, whatever its fingerprint says then.
      *
      * <p>The request names the exact type it writes. A subtype registered in its place is not written
      * through a supertype, because the rows would reach the source under one type and be rebuilt under
@@ -278,7 +379,16 @@ public final class JpaSession {
             return;
 
         writable.write(request);
-        this.hydrate(Concurrent.newList(type));
+
+        synchronized (this) {
+            ConcurrentList<Class<JpaModel>> written = Concurrent.newList(type);
+
+            try {
+                this.hydrate(written);
+            } finally {
+                this.covering(written).forEach(this.fingerprints::remove);
+            }
+        }
     }
 
     /**

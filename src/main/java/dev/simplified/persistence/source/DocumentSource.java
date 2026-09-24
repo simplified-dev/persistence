@@ -16,7 +16,8 @@ import java.lang.reflect.Type;
  *
  * <p>A type names its document through the table name it already declares, the origin names that
  * document's layers, and the layers merge by key with the later one winning. That is one mechanism
- * for a generated file, its companion overrides and a local overlay, rather than three.
+ * for a generated file, its companion overrides and a local overlay, rather than three. A type's
+ * fingerprint is its document's, which the origin answers when it can.
  *
  * <p>Reading is all this promises. An origin a caller holds instructions to update is read and
  * written through {@link DocumentSource.Writable}.
@@ -48,6 +49,32 @@ public sealed class DocumentSource implements Source {
     @Override
     public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException {
         return Concurrent.newUnmodifiableList(this.merge(type, this.layers(type)).values());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The origin is asked once, and each type answers the fingerprint of the document its table
+     * names. A type whose document the origin does not fingerprint is left out.
+     */
+    @Override
+    public @NotNull ConcurrentMap<Class<? extends JpaModel>, String> fingerprints(
+        @NotNull ConcurrentList<Class<JpaModel>> types
+    ) throws JpaException {
+        ConcurrentMap<String, String> documents = this.origin.fingerprints();
+        ConcurrentMap<Class<? extends JpaModel>, String> fingerprints = Concurrent.newMap();
+
+        if (documents.isEmpty())
+            return fingerprints;
+
+        for (Class<JpaModel> type : types) {
+            String fingerprint = documents.get(JpaModel.documentOf(type));
+
+            if (fingerprint != null)
+                fingerprints.put(type, fingerprint);
+        }
+
+        return fingerprints;
     }
 
     /**

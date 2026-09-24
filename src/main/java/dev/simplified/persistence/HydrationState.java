@@ -30,7 +30,7 @@ public enum HydrationState {
     HYDRATING,
 
     /**
-     * A generation exists, the last rebuild published it, and it has not stood past its stale
+     * A generation exists, the last rebuild published it, and it has not gone unchecked past its stale
      * threshold.
      */
     CURRENT,
@@ -41,8 +41,8 @@ public enum HydrationState {
     REFRESHING,
 
     /**
-     * A generation exists, the last rebuild published it, and the generation has stood past its stale
-     * threshold.
+     * A generation exists, the last rebuild published it, and no tick has published a newer one or
+     * found its origin unmoved within its stale threshold.
      */
     STALE,
 

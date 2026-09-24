@@ -1,6 +1,8 @@
 package dev.simplified.persistence.source;
 
+import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
@@ -14,7 +16,8 @@ import java.util.Optional;
  * is, and - for an origin a caller holds instructions to update - what the text at a path becomes.
  * A GitHub repository, a directory on disk and a bucket all answer them, and none of them has to
  * share a catalogue type with any other, because the answer is ordered paths rather than a
- * catalogue.
+ * catalogue. An origin that can also say which documents moved answers
+ * {@link #fingerprints()}, which spares a session the reads that would find nothing new.
  *
  * <p>Reading is all an origin promises. Writing is {@link Writable}, and an origin that was handed
  * no write instruction simply is not one.
@@ -45,6 +48,23 @@ public interface DocumentOrigin {
      * @throws JpaException if the path cannot be read or decoded
      */
     @NotNull String read(@NotNull String path) throws JpaException;
+
+    /**
+     * The fingerprint of every document this origin publishes, as it stands now.
+     *
+     * <p>A fingerprint covers every layer of its document, so a change to any of them moves it, and
+     * two answers carrying the same fingerprint for a name describe the same text. A session asks
+     * before it reads and skips a document whose fingerprint has not moved since. An origin that
+     * cannot fingerprint answers empty, and a document the answer leaves out is read as though it
+     * moved.
+     *
+     * @return the fingerprints keyed by logical document name, empty when this origin cannot
+     *         fingerprint
+     * @throws JpaException if the origin cannot be asked
+     */
+    default @NotNull ConcurrentMap<String, String> fingerprints() throws JpaException {
+        return Concurrent.newUnmodifiableMap();
+    }
 
     /**
      * The write half, for an origin a caller holds instructions to update.

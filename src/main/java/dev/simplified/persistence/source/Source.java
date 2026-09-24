@@ -1,6 +1,9 @@
 package dev.simplified.persistence.source;
 
+import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.ConcurrentMap;
+import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
@@ -32,6 +35,24 @@ public interface Source {
      * @throws JpaException if the read fails
      */
     <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException;
+
+    /**
+     * The fingerprint of each given type's rows, as the origin holds them now.
+     *
+     * <p>Two answers carrying the same fingerprint for a type describe the same rows, so a session
+     * asks before it reads and a {@link Hydration} tick skips a type whose fingerprint has not moved
+     * since its held rows were read. A type the answer leaves out is one this source cannot vouch
+     * for, and is read. A source that cannot fingerprint answers empty, which is the default.
+     *
+     * @param types the registered types asked about
+     * @return the fingerprints keyed by type, empty when this source cannot fingerprint
+     * @throws JpaException if the origin cannot be asked
+     */
+    default @NotNull ConcurrentMap<Class<? extends JpaModel>, String> fingerprints(
+        @NotNull ConcurrentList<Class<JpaModel>> types
+    ) throws JpaException {
+        return Concurrent.newUnmodifiableMap();
+    }
 
     /**
      * The write half, for an origin a caller holds instructions to update.
