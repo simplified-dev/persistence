@@ -62,10 +62,10 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >    then hand its walk to `Graph.ancestors`. Push and build persistence. Move
 >    `SkyBlock-Simplified/api`'s `:38`, `:39` and `:45`, merge its `feat/indexing` to `master` and build
 >    `master-SNAPSHOT`, which data reaches through `:71`. Move github's `:37`, then push and build its
->    `feat/indexing`. Land the fix for "A consumer can still force a full SkyBlock rehydration" below,
->    so the sha skyblock publishes carries no public `getSessionManager()`, then move skyblock's `:35`,
->    `:38`, `:39` and `:42`, push and build it. Last, move hypixel's `:35`, `:38`, `:39` and `:42`, and
->    data's `:67`, `:76`, `:78` and `:79`.
+>    `feat/indexing`. skyblock's `4106c4c` already keeps its `SessionManager` private and connects the
+>    corpus once per JVM, so the sha it publishes carries no public `getSessionManager()`; move
+>    skyblock's `:35`, `:38`, `:39` and `:42`, push and build it. Last, move hypixel's `:35`, `:38`,
+>    `:39` and `:42`, and data's `:67`, `:76`, `:78` and `:79`.
 > 2. The convention pins. Walk `toolsmith jitpack order collections` over the modules outside the
 >    chain: the thirteen that pin `collections` `9696ca5` by convention only - `expression`, `image`,
 >    `manager`, `reflection`, `scheduler`, `gson-extras`, `minecraft-text`, `yaml`, `client`,
@@ -126,11 +126,11 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > unchecked, and a delete of a row other rows still name is checked on no path. Such a write lands as
 > a commit. A reading session whose tick finds the document moved then fails the rebuild that relinks
 > the dangling row, and every type that rebuild covers stays `DEGRADED` on its previous generation and
-> fails again at each tick; every `SkyBlockData.connect()` after the commit fails, corpus-wide. Both
-> last until another commit repairs the data.
+> fails again at each tick; a process whose first `SkyBlockData.connect()` comes after the commit
+> fails to connect, corpus-wide. Both last until another commit repairs the data.
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
->   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:130` -
+>   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:152` -
 >   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
 > - Type: **RISK**
@@ -184,29 +184,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **RISK**
 > - Status: **OPEN**
 
-> #### A consumer can still force a full SkyBlock rehydration
-> An empty write no longer rebuilds anything and `SessionManager.reconnect` is gone, but
-> `SkyBlockData.getSessionManager()` is public, so `shutdown()` followed by `SkyBlockData.connect()`
-> re-reads every type - which D7 and invariant 5 say no downstream consumer can do.
->
-> The getter is also how the bot registers its own database session beside the corpus session, and
-> how the skyblock and hypixel tests connect and disconnect a local checkout, so closing it moves all
-> three. Closing it alone does not stop a second `SkyBlockData.connect()`: `SessionManager.connect`
-> does not refuse a type an active session already registers, so the second call re-reads every type
-> into a session behind the first, which every lookup and write still reaches first.
->
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:59` -
->   `sessionManager` and its generated getter, `:113` - `connect()`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:48` - `main`;
->   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java:19` -
->   `testPlanExecutionStarted`, `:26` - `testPlanExecutionFinished`;
->   `Simplified-Api/skyblock/src/test/java/api/simplified/skyblock/LocalSkyBlockData.java:93` -
->   `connect`, `:105` - `disconnect`;
->   `Simplified-Api/hypixel/src/test/java/api/simplified/hypixel/response/skyblock/stats/LocalSkyBlockData.java:110`
->   - `connect`, `:122` - `disconnect`
-> - Type: **RISK**
-> - Status: **OPEN**
-
 > #### `bot` does not build, for reasons that predate this work
 > `SkyBlock-Simplified/bot` cannot be compiled in this workspace, so its write sites and its
 > relational session are unverified beyond review.
@@ -235,17 +212,46 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > enum `Season`. `JpaExtractor` sits outside the package the bot's models are discovered from, so the
 > database does not map it and nothing installs `JpaExtractorStore`. And `TestLifecycleListener`
 > connects the corpus over GitHub and registers no bot session, where a test run wants the disk
-> checkout and an in-memory database over the same models `SimplifiedBot` registers.
+> checkout, which `SkyBlockData.connect(origin)` takes, and an in-memory database over the same
+> models `SimplifiedBot` registers.
+>
+> It also has to move its own tables off the corpus's manager, which is this design's change rather
+> than one that predates it. `SkyBlockData` keeps its `SessionManager` private, holds only the corpus
+> session on it and offers no write. javac stops at the imports and signatures above, so none of
+> these sites is among the 67 errors yet:
+>
+> - `SimplifiedBot.main` connects its tables on a `SessionManager` it owns rather than on
+>   `SkyBlockData.getSessionManager()` (`SimplifiedBot.java:58`), shuts that session down on the
+>   same manager in its exit hook (`:60`), and its comment at `:49-52` stops saying
+>   `SkyBlockData.getRepository` and `SkyBlockData.write` reach both.
+> - `LinkCommand` and `RepGiveCommand` write through that manager rather than `SkyBlockData.write`
+>   (`LinkCommand.java:72`, `:87`; `RepGiveCommand.java:84`).
+> - Every read of a bot table goes through that manager rather than `SkyBlockData.getRepository`,
+>   which answers corpus types only: `AppUser` at `LinkCommand.java:59`, `AboutCommand.java:81`,
+>   `SkyBlockUser.java:55` and `:109`, and `SkyBlockUserCommand.java:785`; `AppGuildReputationType`
+>   and `AppGuildReputation` at `RepGiveCommand.java:62`, `:69` and `:129` and
+>   `RepCheckCommand.java:70` and `:81`; `SbsLegacyDonor` at `AboutCommand.java:151`; and
+>   `OptimizerMobType` at `OptimizerTest.java:47`.
+> - `TestLifecycleListener` stops calling the getter, at `:21` and at `:29-30`, where it shuts the
+>   corpus session down. That session is held until exit and its manager's hook shuts it down, so
+>   nothing replaces the shutdown.
 >
 > - Affected: `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/optimizer/modules/common/Solution.java:9-11`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:12`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepGiveCommand.java:8`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/LinkCommand.java:12`, `:59`, `:72`,
+>   `:87`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepGiveCommand.java:8`,
+>   `:62`, `:69`, `:84`, `:129`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/reputation/RepCheckCommand.java:70`,
+>   `:81`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/command/AboutCommand.java:81`, `:151`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/util/SkyBlockUser.java:55`, `:109`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/util/SkyBlockUserCommand.java:785`;
 >   `SkyBlock-Simplified/bot/build.gradle.kts:60`;
->   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java`;
->   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java`;
->   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/optimizer/OptimizerTest.java:33`;
+>   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/SimplifiedBot.java:49-60`;
+>   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/TestLifecycleListener.java:21`, `:29-30`;
+>   `SkyBlock-Simplified/bot/src/test/java/dev/sbs/bot/optimizer/OptimizerTest.java:33`, `:47`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/feature/extractor/JpaExtractorStore.java`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/OptimizerSupportItem.java:34`;
 >   `SkyBlock-Simplified/bot/src/main/java/dev/sbs/bot/persistence/model/SkyBlockEventTimer.java:42`, `:51`
 > - Type: **GAP**
-> - Status: **OPEN** - no cause belongs to this design
+> - Status: **OPEN** - no cause of the build failure belongs to this design
