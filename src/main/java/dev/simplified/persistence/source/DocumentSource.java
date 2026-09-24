@@ -5,7 +5,6 @@ import com.google.gson.reflect.TypeToken;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
-import dev.simplified.collection.ConcurrentSet;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
@@ -60,7 +59,7 @@ public sealed class DocumentSource implements Source {
         ConcurrentMap<String, T> merged = Concurrent.newLinkedMap();
 
         for (String path : this.layers(type))
-            merged.putAll(this.rowsOf(type, path));
+            merged.putAll(this.rowsIn(type, this.origin.read(path)));
 
         return Concurrent.newUnmodifiableList(merged.values());
     }
@@ -109,20 +108,16 @@ public sealed class DocumentSource implements Source {
     }
 
     /**
-     * Reads one layer of a type's document and keys its rows.
+     * Parses one layer of a type's document and keys its rows.
      *
      * @param type the entity class
-     * @param path the layer to read
+     * @param text the layer's content
      * @param <T> the entity type
      * @return the layer's rows keyed by their id, in the layer's order
-     * @throws JpaException if the layer cannot be read
      */
-    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> rowsOf(
-        @NotNull Class<T> type,
-        @NotNull String path
-    ) throws JpaException {
+    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> rowsIn(@NotNull Class<T> type, @NotNull String text) {
         Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
-        ConcurrentList<T> rows = this.gson.fromJson(this.origin.read(path), listType);
+        ConcurrentList<T> rows = this.gson.fromJson(text, listType);
         return rows == null ? Concurrent.newLinkedMap() : JpaModel.keyed(type, rows);
     }
 
@@ -159,11 +154,14 @@ public sealed class DocumentSource implements Source {
          * written. A key's owner is the last layer carrying it, which is the one a read answers, and a
          * new row goes last so that a regenerated first layer cannot drop it.
          *
-         * <p>A layer is a whole file, so each changed layer is rewritten with its own rows as one
-         * origin write, handed the request's precondition. Granularity is the origin's problem rather
-         * than the caller's. Changed layers are written in merge order, so a delete that fails between
-         * two layers leaves the later layer's row, which is what a read answered before the write,
-         * rather than an older one.
+         * <p>Which layer a key goes to is decided from the layers as this source reads them. Each
+         * changed layer is then one {@linkplain DocumentOrigin.Writable#edit edit} of the origin,
+         * which applies only the rows routed to that layer to its text as the origin holds it when it
+         * writes, so a row committed to the layer in between survives beside the written one, and a
+         * layer that moves under the origin's own read has the edit refused rather than written over
+         * it. Granularity is the origin's problem rather than the caller's. Changed layers are
+         * edited in merge order, so a delete that fails between two layers leaves the later layer's
+         * row, which is what a read answered before the write, rather than an older one.
          */
         @Override
         public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
@@ -171,20 +169,23 @@ public sealed class DocumentSource implements Source {
                 return;
 
             Class<T> type = request.type();
+            boolean delete = request.operation() == WriteRequest.Operation.DELETE;
             ConcurrentList<String> paths = this.layers(type);
             ConcurrentMap<String, ConcurrentMap<String, T>> held = Concurrent.newMap();
-            ConcurrentSet<String> changed = Concurrent.newSet();
+            ConcurrentMap<String, ConcurrentMap<String, T>> routed = Concurrent.newMap();
 
-            for (String path : paths)
-                held.put(path, this.rowsOf(type, path));
+            for (String path : paths) {
+                held.put(path, this.rowsIn(type, this.origin.read(path)));
+                routed.put(path, Concurrent.newLinkedMap());
+            }
 
             for (Map.Entry<String, T> entry : JpaModel.keyed(type, request.rows()).entrySet()) {
                 String key = entry.getKey();
 
-                if (request.operation() == WriteRequest.Operation.DELETE) {
+                if (delete) {
                     for (String path : paths) {
-                        if (held.get(path).remove(key) != null)
-                            changed.add(path);
+                        if (held.get(path).containsKey(key))
+                            routed.get(path).put(key, entry.getValue());
                     }
                 } else {
                     String owner = paths.getLast();
@@ -194,22 +195,30 @@ public sealed class DocumentSource implements Source {
                             owner = path;
                     }
 
-                    held.get(owner).put(key, entry.getValue());
-                    changed.add(owner);
+                    routed.get(owner).put(key, entry.getValue());
                 }
             }
 
             Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
 
             for (String path : paths) {
-                if (!changed.contains(path))
+                ConcurrentMap<String, T> rows = routed.get(path);
+
+                if (rows.isEmpty())
                     continue;
 
-                this.writes.write(
-                    path,
-                    this.gson.toJson(Concurrent.newUnmodifiableList(held.get(path).values()), listType),
-                    request.getPrecondition()
-                );
+                this.writes.edit(path, text -> {
+                    ConcurrentMap<String, T> current = this.rowsIn(type, text);
+
+                    for (Map.Entry<String, T> row : rows.entrySet()) {
+                        if (delete)
+                            current.remove(row.getKey());
+                        else
+                            current.put(row.getKey(), row.getValue());
+                    }
+
+                    return this.gson.toJson(Concurrent.newUnmodifiableList(current.values()), listType);
+                });
             }
         }
 

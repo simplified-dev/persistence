@@ -75,8 +75,7 @@ public interface Source {
          *
          * @param request the write to apply
          * @param <T> the entity type
-         * @throws JpaException if the write fails, including when the request's precondition no longer
-         *         holds
+         * @throws JpaException if the write fails, including when the origin moved under it
          */
         <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException;
 

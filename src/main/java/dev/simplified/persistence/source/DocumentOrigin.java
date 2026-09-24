@@ -7,7 +7,7 @@ import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 /**
  * A tree of files a document source draws its layers out of.
@@ -72,27 +72,21 @@ public interface DocumentOrigin {
     interface Writable extends DocumentOrigin {
 
         /**
-         * Replaces the text at one path.
+         * Replaces the text at one path with what the change makes of it.
          *
-         * <p>The precondition is whatever token this origin recognises for "the path is still as I
-         * last saw it" - a blob sha, a revision, a content hash. Named, it is sent and a moved path
-         * refuses the write; absent, the origin resolves its own, which still refuses a write over a
-         * path that moved.
+         * <p>The origin reads the text together with whatever token it recognises for that revision -
+         * a blob sha, a revision, a content hash - applies the change, and writes under that token. A
+         * path that moves in between refuses the write, so a change is only ever applied to the text
+         * it replaces.
          *
-         * <p>Replacing a file here reaches no session reading this origin. A registered type is
-         * written through {@link JpaSession#write(WriteRequest)}, which rebuilds it.
+         * <p>Editing a file here reaches no session reading this origin. A registered type is written
+         * through {@link JpaSession#write(WriteRequest)}, which rebuilds it.
          *
          * @param path a path this origin published, relative to its root
-         * @param content the text to write
-         * @param precondition the token the caller expects the path to still carry, empty to let the
-         *        origin resolve one
-         * @throws JpaException if the write fails, including when the precondition no longer holds
+         * @param change what the current text becomes
+         * @throws JpaException if the write fails, including when the path moved before it landed
          */
-        void write(
-            @NotNull String path,
-            @NotNull String content,
-            @NotNull Optional<String> precondition
-        ) throws JpaException;
+        void edit(@NotNull String path, @NotNull UnaryOperator<String> change) throws JpaException;
 
     }
 

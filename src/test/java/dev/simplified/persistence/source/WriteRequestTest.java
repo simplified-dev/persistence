@@ -52,30 +52,6 @@ class WriteRequestTest {
     }
 
     @Test
-    @DisplayName("a request applies unconditionally until a precondition is named")
-    void preconditionIsAbsentUntilNamed() {
-        WriteRequest<ContractRow> unconditional = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));
-
-        assertThat(unconditional.getPrecondition().isPresent(), is(false));
-        assertThat(unconditional.getPrecondition().isEmpty(), is(true));
-    }
-
-    @Test
-    @DisplayName("expecting returns a copy and leaves the original unconditional")
-    void expectingCopiesRatherThanMutates() {
-        WriteRequest<ContractRow> unconditional = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));
-        WriteRequest<ContractRow> conditional = unconditional.expecting("e3ac8cc");
-
-        assertThat(conditional.getPrecondition().orElseThrow(), equalTo("e3ac8cc"));
-        assertThat(unconditional.getPrecondition().isEmpty(), is(true));
-
-        // everything else travels across unchanged
-        assertThat(conditional.type(), equalTo(unconditional.type()));
-        assertThat(conditional.operation(), equalTo(unconditional.operation()));
-        assertThat(conditional.rows(), equalTo(unconditional.rows()));
-    }
-
-    @Test
     @DisplayName("the rows a request carries cannot be added to afterwards")
     void rowsAreSealed() {
         WriteRequest<ContractRow> request = WriteRequest.upsert(ContractRow.class, List.of(row(1, "first")));

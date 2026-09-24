@@ -59,34 +59,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Type: **GAP**
 > - Status: **OPEN** - needs pushes and JitPack builds in dependency order, `collections` first
 
-> #### A document write can overwrite a concurrent commit
-> No production write names a precondition - nothing answers a caller a revision it could name - so
-> `CorpusOrigin.Writing` asks GitHub for the file's current blob sha at the moment it writes, after
-> `DocumentSource` has read the layer. A commit landing after the body was read is overwritten with
-> the older body plus the write. The window is wider than the gap between the two reads: `CorpusOrigin.Writing` polls the
-> branch tip before it resolves a write's layers and reads the body at that tip, but the tip read goes
-> through a client whose response cache replays it for up to a minute, and the sha is resolved at the
-> branch through a second client with a cache of its own, so the body can be up to a minute older
-> than the sha it is written under. The javadoc of `DocumentOrigin.Writable.write`, and of its override in
-> `CorpusOrigin.Writing`, says a moved path refuses the write. `WriteRequest` says a GitHub source
-> retries when the origin has moved, and nothing retries. `Source.Writable.write` promises a
-> precondition no production write carries, and `DocumentSource.Writable.write` hands the one
-> precondition a request names to every layer it rewrites, where a blob sha names only one file.
->
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
->   `Writing.write`, javadoc at `:144-146`, `:131` - `Writing.layersOf`;
->   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:169` - `Writable.write`;
->   `src/main/java/dev/simplified/persistence/source/DocumentOrigin.java:91` - `Writable.write`, javadoc
->   at `:77-80`;
->   `src/main/java/dev/simplified/persistence/source/WriteRequest.java:30` - `precondition`, class
->   javadoc at `:14-16`;
->   `src/main/java/dev/simplified/persistence/source/Source.java:81` - `Writable.write`, `@throws` at
->   `:78-79`;
->   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:147` -
->   `read(String, String)`, `:158` - `metadata`, `:257` - `poll`
-> - Type: **BUG**
-> - Status: **OPEN**
-
 > #### A queued corpus write skips the session's link check
 > `JpaSession.write` links an upsert's rows against the rows the session holds before anything reaches
 > the source, and refuses a row whose plain single-valued `@Linked` field carries no id or names no

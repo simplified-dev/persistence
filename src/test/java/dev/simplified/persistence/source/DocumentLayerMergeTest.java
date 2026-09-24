@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
@@ -36,12 +37,16 @@ class DocumentLayerMergeTest {
     /**
      * A document origin over a map, so a case names its layers as bodies and nothing parses a
      * catalogue to set one up.
+     *
+     * <p>A body a case puts in {@code landing} is a commit someone else makes after the source read
+     * the layer: it replaces the layer at the next edit of that path, before the origin reads the
+     * text the edit applies to.
      */
     private static final class Layers implements DocumentOrigin.Writable {
 
         private final @NotNull ConcurrentMap<String, String> bodies = Concurrent.newLinkedMap();
+        private final @NotNull ConcurrentMap<String, String> landing = Concurrent.newMap();
         private final @NotNull ConcurrentList<String> written = Concurrent.newList();
-        private @NotNull Optional<String> precondition = Optional.empty();
 
         private Layers(@NotNull String @NotNull ... bodies) {
             for (int index = 0; index < bodies.length; index++)
@@ -62,10 +67,14 @@ class DocumentLayerMergeTest {
         }
 
         @Override
-        public void write(@NotNull String path, @NotNull String content, @NotNull Optional<String> precondition) {
-            this.bodies.put(path, content);
+        public void edit(@NotNull String path, @NotNull UnaryOperator<String> change) {
+            String landed = this.landing.remove(path);
+
+            if (landed != null)
+                this.bodies.put(path, landed);
+
+            this.bodies.put(path, change.apply(this.read(path)));
             this.written.add(path);
-            this.precondition = precondition;
         }
 
     }
@@ -265,25 +274,41 @@ class DocumentLayerMergeTest {
     }
 
     @Test
-    @DisplayName("the precondition the request names is the one the origin is handed")
-    void preconditionReachesTheOrigin() {
-        Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
+    @DisplayName("a write applies to the layer as the origin holds it when it writes, so a row committed in between survives")
+    void writeAppliesToTheLayerTheOriginHolds() {
+        Layers origin = new Layers(
+            "[{\"id\":\"A\",\"name\":\"a\"}]",
+            "[{\"id\":\"B\",\"name\":\"b\"}]"
+        );
         Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        origin.landing.put("layer-1.json", "[{\"id\":\"B\",\"name\":\"b\"},{\"id\":\"D\",\"name\":\"d\"}]");
 
-        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b"))).expecting("blob-sha"));
+        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("C", "c"))));
 
-        assertThat(origin.precondition, equalTo(Optional.of("blob-sha")));
+        assertThat(origin.written, contains("layer-1.json"));
+        assertThat(idsIn(origin, "layer-1.json"), contains("B", "D", "C"));
+        assertThat(
+            source.read(LayeredRow.class).stream().map(LayeredRow::getId).toList(),
+            contains("A", "B", "D", "C")
+        );
     }
 
     @Test
-    @DisplayName("a request naming no precondition leaves the origin to resolve its own")
-    void unconditionalWriteNamesNoPrecondition() {
-        Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
+    @DisplayName("a delete removes only the keys it names from the layer as the origin holds it when it writes")
+    void deleteAppliesToTheLayerTheOriginHolds() {
+        Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]");
         Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        origin.landing.put(
+            "layer-0.json",
+            "[{\"id\":\"A\",\"name\":\"a2\"},{\"id\":\"B\",\"name\":\"b\"},{\"id\":\"D\",\"name\":\"d\"}]"
+        );
 
-        source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b"))));
+        source.write(WriteRequest.delete(LayeredRow.class, List.of(row("B", "b"))));
 
-        assertThat(origin.precondition.isEmpty(), is(true));
+        ConcurrentList<LayeredRow> rows = source.read(LayeredRow.class);
+
+        assertThat(rows.stream().map(LayeredRow::getId).toList(), contains("A", "D"));
+        assertThat(rows.getFirst().getName(), equalTo("a2"));
     }
 
     private static @NotNull List<String> idsIn(@NotNull Layers origin, @NotNull String path) {
