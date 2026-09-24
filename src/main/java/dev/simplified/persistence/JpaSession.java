@@ -306,6 +306,31 @@ public final class JpaSession {
     private static @NotNull ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> dependentsOf(
         @NotNull ConcurrentList<Class<JpaModel>> models
     ) {
+        // TODO: once the collections pin carries Graph.ancestors, hand this walk to Graph:
+        //  - the dependents field becomes `private final @NotNull Graph<Class<JpaModel>> links`,
+        //    built in the constructor by linksOf(config.models())
+        //  - hydrate asks `covered.addAll(this.links.ancestors(type))` in place of the
+        //    dependents.getOrDefault lookup
+        //  - this method becomes linksOf, which builds the edges and leaves the closure below to
+        //    Graph.ancestors - every node reaching the target along one or more edges, so a type on
+        //    a cycle stays in its own set, as it does here
+        //  - the ArrayDeque and Deque imports go with the walk
+        //
+        //    private static @NotNull Graph<Class<JpaModel>> linksOf(@NotNull ConcurrentList<Class<JpaModel>> models) {
+        //        return Graph.<Class<JpaModel>>builder()
+        //            .withValues(models)
+        //            .withEdgeFunction(model -> Stream.concat(
+        //                    JpaRepository.links(model).stream(),
+        //                    new Reflection<>(model).getFields()
+        //                        .stream()
+        //                        .filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
+        //                )
+        //                .map(JpaRepository::targetOf)
+        //                .flatMap(target -> registered(models, target).stream()))
+        //            .build();
+        //    }
+        //
+        //  JpaSessionRebuildTest pins the transitive and cyclic rebuilds the swap has to keep.
         ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> direct = Concurrent.newMap();
 
         for (Class<JpaModel> model : models) {
