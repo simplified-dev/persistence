@@ -45,8 +45,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Status: **OPEN**
 
 > #### A corpus write's own rebuild reads the document from before the write
-> `JpaSession.write` rebuilds the written type once the write lands. Over the corpus's writing
-> origin that rebuild reads the rows from before the write. `CorpusOrigin.Writing.layersOf` polls the
+> `JpaSession.write` rebuilds the written type once the write lands. Over the corpus's read-write
+> source that rebuild reads the rows from before the write. `CorpusOrigin.refreshedLayersOf` polls the
 > branch tip before the write edits the document, and again when the rebuild resolves its layers,
 > and the second tip request is answered from the client's response cache, which keeps GitHub's
 > answer for its `max-age` of a minute. As far as the corpus can tell the branch has not moved, so
@@ -60,14 +60,14 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > for the corpus's ten-minute cadence, between ten and twenty minutes, since the rebuild's
 > publication restarts the cadence - and a type with no cadence of its own keeps them until a later
 > rebuild covers it or the session connects again. No deployment in the workspace both writes and
-> reads the corpus: `SkyBlockData.connect()` reads through a source with no write half, and data's
+> reads the corpus: `SkyBlockData.connect()` reads through a read-only source, and data's
 > `WriteQueueConsumer` writes through the source `SkyBlockData.writing(...)` returns with no session
 > over it. The path skyblock's README documents for a token-holding caller - connecting
 > `new JpaConfig(..., SkyBlockData.writing(corpus))` on its own `SessionManager` and writing through
 > that session - is exactly the one this affects.
 >
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
->   `Writing.layersOf`, `:57` - `read`;
+> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:110` -
+>   `refreshedLayersOf`, `:133` - `read`;
 >   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:266` - `tip`,
 >   `:341` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`
 > - Type: **RISK**
@@ -88,6 +88,6 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:182` -
 >   `cycle`, `:218` - `apply`, `:265` - `reschedule`;
->   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:167` - `Writable.write`
+>   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:285` - `ReadWrite.write`
 > - Type: **RISK**
 > - Status: **OPEN**

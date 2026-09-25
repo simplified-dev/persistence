@@ -2,48 +2,97 @@ package dev.simplified.persistence.source;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import dev.simplified.annotations.BuilderNames;
+import dev.simplified.annotations.ClassBuilder;
+import dev.simplified.annotations.SetterNames;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.JpaModel;
+import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Type;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 /**
- * A source reading each type out of the layers a {@link DocumentOrigin} names for it.
+ * A source reading each type out of the layers of a tree of files - a GitHub repository, a directory
+ * on disk, a bucket - that it is given as functions: which paths a logical name is made of, what the
+ * text at a path is, and which documents moved.
  *
- * <p>A type names its document through the table name it already declares, the origin names that
+ * <p>A type names its document through the table name it already declares, the tree names that
  * document's layers, and the layers merge by key with the later one winning. That is one mechanism
  * for a generated file, its companion overrides and a local overlay, rather than three. A type's
- * fingerprint is its document's, which the origin answers when it can.
+ * fingerprint is its document's, which the tree answers when it can.
  *
- * <p>Reading is all this promises. An origin a caller holds instructions to update is read and
- * written through {@link DocumentSource.Writable}.
+ * <p>Reading is all a {@link ReadOnly} source promises, and it is no {@link Source.Writable}, so one
+ * handed where a write is expected does not compile. A {@link ReadWrite} source is also given what the
+ * text at a path becomes. Both are built the same way up to that instruction, and only the writable
+ * builder takes it.
  */
-public sealed class DocumentSource implements Source {
+@ClassBuilder(
+    setters = @SetterNames(set = "with{}"),
+    builder = @BuilderNames(from = BuilderNames.NONE, toBuilder = BuilderNames.NONE)
+)
+public abstract sealed class DocumentSource implements Source permits DocumentSource.ReadOnly, DocumentSource.ReadWrite {
 
     /**
-     * The tree of files the layers are read out of.
-     */
-    final @NotNull DocumentOrigin origin;
-
-    /**
-     * The instance documents are parsed with.
-     */
-    final @NotNull Gson gson;
-
-    /**
-     * Constructs a source reading documents off the given origin.
+     * The ordered paths a logical document is made of, empty when the tree publishes no such
+     * document.
      *
-     * @param origin the tree of files the layers are read out of
-     * @param gson the instance documents are parsed with
+     * <p>Order is merge order: a later path repeating a key replaces the row an earlier one carried,
+     * which is what makes a companion file an override of the file it accompanies rather than a
+     * second copy of it.
      */
-    public DocumentSource(@NotNull DocumentOrigin origin, @NotNull Gson gson) {
-        this.origin = origin;
-        this.gson = gson;
+    private final @NotNull Function<String, ConcurrentList<String>> layers;
+
+    /**
+     * The text at a path the layers name, relative to the tree's root.
+     */
+    private final @NotNull Function<String, String> text;
+
+    /**
+     * The fingerprint of every document the tree publishes as it stands now, keyed by logical
+     * document name, empty when the tree cannot fingerprint.
+     *
+     * <p>A fingerprint covers every layer of its document, so a change to any of them moves it, and
+     * two answers carrying the same fingerprint for a name describe the same text. A session asks
+     * before it reads and skips a document whose fingerprint has not moved since, and a document the
+     * answer leaves out is read as though it moved.
+     */
+    private final @NotNull Supplier<ConcurrentMap<String, String>> fingerprints = Concurrent::newUnmodifiableMap;
+
+    /**
+     * The instance documents are parsed and serialized with, which decides how a document's text
+     * reads.
+     */
+    private final @NotNull Gson gson;
+
+    /**
+     * Constructs a source over the tree a builder collected.
+     *
+     * @param builder the builder holding the tree's functions and the parser
+     * @throws JpaException if no layers, no text or no parser is given
+     */
+    protected DocumentSource(@NotNull Builder<?, ?> builder) {
+        if (builder.layers == null)
+            throw new JpaException("A document source names no layers");
+
+        if (builder.text == null)
+            throw new JpaException("A document source reads no text");
+
+        if (builder.gson == null)
+            throw new JpaException("A document source names no parser");
+
+        this.layers = builder.layers;
+        this.text = builder.text;
+        this.fingerprints = builder.fingerprints;
+        this.gson = builder.gson;
     }
 
     /**
@@ -58,8 +107,8 @@ public sealed class DocumentSource implements Source {
     public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) throws JpaException {
         ConcurrentMap<String, T> merged = Concurrent.newLinkedMap();
 
-        for (String path : this.layers(type))
-            merged.putAll(this.rowsIn(type, this.origin.read(path)));
+        for (String path : this.layersOf(type))
+            merged.putAll(this.rowsIn(type, this.textAt(path)));
 
         return Concurrent.newUnmodifiableList(merged.values());
     }
@@ -67,27 +116,27 @@ public sealed class DocumentSource implements Source {
     /**
      * {@inheritDoc}
      *
-     * <p>The origin is asked once, and each type answers the fingerprint of the document its table
-     * names. A type whose document the origin does not fingerprint is left out.
+     * <p>The tree is asked once, and each type answers the fingerprint of the document its table
+     * names. A type whose document the tree does not fingerprint is left out.
      */
     @Override
     public @NotNull ConcurrentMap<Class<? extends JpaModel>, String> fingerprints(
         @NotNull ConcurrentList<Class<JpaModel>> types
     ) throws JpaException {
-        ConcurrentMap<String, String> documents = this.origin.fingerprints();
-        ConcurrentMap<Class<? extends JpaModel>, String> fingerprints = Concurrent.newMap();
+        ConcurrentMap<String, String> documents = this.fingerprints.get();
+        ConcurrentMap<Class<? extends JpaModel>, String> answered = Concurrent.newMap();
 
         if (documents.isEmpty())
-            return fingerprints;
+            return answered;
 
         for (Class<JpaModel> type : types) {
             String fingerprint = documents.get(JpaModel.documentOf(type));
 
             if (fingerprint != null)
-                fingerprints.put(type, fingerprint);
+                answered.put(type, fingerprint);
         }
 
-        return fingerprints;
+        return answered;
     }
 
     /**
@@ -95,55 +144,124 @@ public sealed class DocumentSource implements Source {
      *
      * @param type the entity class
      * @return the paths, never empty
-     * @throws JpaException if the origin publishes no document under the type's name
+     * @throws JpaException if the tree publishes no document under the type's name
      */
-    final @NotNull ConcurrentList<String> layers(@NotNull Class<? extends JpaModel> type) throws JpaException {
+    final @NotNull ConcurrentList<String> layersOf(@NotNull Class<? extends JpaModel> type) throws JpaException {
         String name = JpaModel.documentOf(type);
-        ConcurrentList<String> layers = this.origin.layersOf(name);
+        ConcurrentList<String> paths = this.layers.apply(name);
 
-        if (layers.isEmpty())
-            throw new JpaException("The origin names no document '%s' for '%s'", name, type.getName());
+        if (paths.isEmpty())
+            throw new JpaException("The source names no document '%s' for '%s'", name, type.getName());
 
-        return layers;
+        return paths;
+    }
+
+    /**
+     * Reads the text at one path the layers name.
+     *
+     * @param path the path, relative to the tree's root
+     * @return the text
+     * @throws JpaException if the path cannot be read
+     */
+    final @NotNull String textAt(@NotNull String path) throws JpaException {
+        return this.text.apply(path);
     }
 
     /**
      * Parses one layer of a type's document and keys its rows.
      *
      * @param type the entity class
-     * @param text the layer's content
+     * @param body the layer's text
      * @param <T> the entity type
      * @return the layer's rows keyed by their id, in the layer's order
      */
-    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> rowsIn(@NotNull Class<T> type, @NotNull String text) {
-        Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
-        ConcurrentList<T> rows = this.gson.fromJson(text, listType);
+    final <T extends JpaModel> @NotNull ConcurrentMap<String, T> rowsIn(@NotNull Class<T> type, @NotNull String body) {
+        ConcurrentList<T> rows = this.gson.fromJson(body, listOf(type));
         return rows == null ? Concurrent.newLinkedMap() : JpaModel.keyed(type, rows);
     }
 
     /**
-     * A document source over an origin a caller holds instructions to update.
+     * Serializes a layer's rows back into its text.
      *
-     * <p>The write instruction is the origin's, so it is the origin's type that carries it: this takes
-     * a {@link DocumentOrigin.Writable}, and handing it a read-only origin does not compile. That is
-     * what keeps a caller holding no instruction from building a source that claims one.
+     * @param type the entity class
+     * @param rows the layer's rows, in the order they are written
+     * @param <T> the entity type
+     * @return the layer's text
      */
-    public static final class Writable extends DocumentSource implements Source.Writable {
+    final <T extends JpaModel> @NotNull String bodyOf(@NotNull Class<T> type, @NotNull ConcurrentMap<String, T> rows) {
+        return this.gson.toJson(Concurrent.newUnmodifiableList(rows.values()), listOf(type));
+    }
+
+    /**
+     * The list type a layer of a type's document parses as.
+     *
+     * @param type the entity class
+     * @return the parameterized list type
+     */
+    private static @NotNull Type listOf(@NotNull Class<? extends JpaModel> type) {
+        return TypeToken.getParameterized(ConcurrentList.class, type).getType();
+    }
+
+    /**
+     * A document source that reads and never writes.
+     */
+    @ClassBuilder(
+        setters = @SetterNames(set = "with{}"),
+        builder = @BuilderNames(from = BuilderNames.NONE, toBuilder = BuilderNames.NONE)
+    )
+    public static final class ReadOnly extends DocumentSource {
 
         /**
-         * The origin, as the type that carries its write instruction.
-         */
-        private final @NotNull DocumentOrigin.Writable writes;
-
-        /**
-         * Constructs a source reading and writing documents off the given origin.
+         * Constructs a read-only source over the tree a builder collected.
          *
-         * @param origin the tree of files the layers are read out of and written back to
-         * @param gson the instance documents are parsed and serialized with
+         * @param builder the builder holding the tree's functions and the parser
+         * @throws JpaException if no layers, no text or no parser is given
          */
-        public Writable(@NotNull DocumentOrigin.Writable origin, @NotNull Gson gson) {
-            super(origin, gson);
-            this.writes = origin;
+        ReadOnly(@NotNull Builder builder) {
+            super(builder);
+        }
+
+    }
+
+    /**
+     * A document source over a tree a caller holds instructions to update.
+     *
+     * <p>The write instruction is the builder's to take, so only a builder that was given one builds a
+     * {@link Source.Writable}. That is what keeps a caller holding no instruction from building a
+     * source that claims one.
+     */
+    @ClassBuilder(
+        setters = @SetterNames(set = "with{}"),
+        builder = @BuilderNames(from = BuilderNames.NONE, toBuilder = BuilderNames.NONE)
+    )
+    public static final class ReadWrite extends DocumentSource implements Source.Writable {
+
+        /**
+         * The instruction replacing the text at one path, relative to the tree's root, with what a
+         * change makes of it.
+         *
+         * <p>The tree reads the text together with whatever token it recognises for that revision - a
+         * blob sha, a revision, a content hash - applies the change, and writes under that token. A
+         * path that moves in between refuses the write, so a change is only ever applied to the text
+         * it replaces. Editing a file this way reaches no session reading the tree: a registered type
+         * is written through {@link JpaSession#write(WriteRequest)}, which rebuilds it.
+         */
+        private final @NotNull BiConsumer<String, UnaryOperator<String>> edit;
+
+        /**
+         * Constructs a writable source over the tree and the write instruction a builder collected.
+         *
+         * @param builder the builder holding the tree's functions, the parser and the write
+         *        instruction
+         * @throws JpaException if no layers, no text, no parser or no write instruction is given
+         */
+        ReadWrite(@NotNull Builder builder) {
+            super(builder);
+
+            if (builder.edit == null)
+                throw new JpaException("A writable document source holds no write instruction");
+
+            this.edit = builder.edit;
         }
 
         /**
@@ -155,13 +273,13 @@ public sealed class DocumentSource implements Source {
          * new row goes last so that a regenerated first layer cannot drop it.
          *
          * <p>Which layer a key goes to is decided from the layers as this source reads them. Each
-         * changed layer is then one {@linkplain DocumentOrigin.Writable#edit edit} of the origin,
-         * which applies only the rows routed to that layer to its text as the origin holds it when it
-         * writes, so a row committed to the layer in between survives beside the written one, and a
-         * layer that moves under the origin's own read has the edit refused rather than written over
-         * it. Granularity is the origin's problem rather than the caller's. Changed layers are
-         * edited in merge order, so a delete that fails between two layers leaves the later layer's
-         * row, which is what a read answered before the write, rather than an older one.
+         * changed layer is then one {@linkplain #edit edit} of the tree, which applies only the rows
+         * routed to that layer to its text as the tree holds it when it writes, so a row committed to
+         * the layer in between survives beside the written one, and a layer that moves under the
+         * tree's own read has the edit refused rather than written over it. Granularity is the tree's
+         * problem rather than the caller's. Changed layers are edited in merge order, so a delete that
+         * fails between two layers leaves the later layer's row, which is what a read answered before
+         * the write, rather than an older one.
          */
         @Override
         public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
@@ -170,12 +288,12 @@ public sealed class DocumentSource implements Source {
 
             Class<T> type = request.type();
             boolean delete = request.operation() == WriteRequest.Operation.DELETE;
-            ConcurrentList<String> paths = this.layers(type);
+            ConcurrentList<String> paths = this.layersOf(type);
             ConcurrentMap<String, ConcurrentMap<String, T>> held = Concurrent.newMap();
             ConcurrentMap<String, ConcurrentMap<String, T>> routed = Concurrent.newMap();
 
             for (String path : paths) {
-                held.put(path, this.rowsIn(type, this.origin.read(path)));
+                held.put(path, this.rowsIn(type, this.textAt(path)));
                 routed.put(path, Concurrent.newLinkedMap());
             }
 
@@ -199,16 +317,14 @@ public sealed class DocumentSource implements Source {
                 }
             }
 
-            Type listType = TypeToken.getParameterized(ConcurrentList.class, type).getType();
-
             for (String path : paths) {
                 ConcurrentMap<String, T> rows = routed.get(path);
 
                 if (rows.isEmpty())
                     continue;
 
-                this.writes.edit(path, text -> {
-                    ConcurrentMap<String, T> current = this.rowsIn(type, text);
+                this.edit.accept(path, body -> {
+                    ConcurrentMap<String, T> current = this.rowsIn(type, body);
 
                     for (Map.Entry<String, T> row : rows.entrySet()) {
                         if (delete)
@@ -217,7 +333,7 @@ public sealed class DocumentSource implements Source {
                             current.put(row.getKey(), row.getValue());
                     }
 
-                    return this.gson.toJson(Concurrent.newUnmodifiableList(current.values()), listType);
+                    return this.bodyOf(type, current);
                 });
             }
         }

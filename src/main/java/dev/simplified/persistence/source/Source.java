@@ -60,7 +60,7 @@ public interface Source {
     /**
      * The write half, for an origin a caller holds instructions to update.
      *
-     * @see DocumentSource.Writable
+     * @see DocumentSource.ReadWrite
      * @see RelationalSource
      */
     interface Writable extends Source {
