@@ -17,7 +17,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > generation, which throws `LazyInitializationException` once the read that loaded it has closed.
 > No model in the workspace declares `@Embedded`, `@Access`, `@Any` or `@ManyToAny`.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:597` - `refuseUnfollowable`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:548` - `refuseUnfollowable`
 > - Type: **GAP**
 > - Status: **OPEN**
 
@@ -34,7 +34,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
 >   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:152` -
->   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`;
+>   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:399` - `write`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
 > - Type: **RISK**
 > - Status: **OPEN**
@@ -64,7 +64,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 > - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
 >   `Writing.layersOf`, `:57` - `read`;
 >   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:222` - `tip`,
->   `:279` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:395` - `write`
+>   `:279` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:399` - `write`
 > - Type: **RISK**
 > - Status: **OPEN**
 

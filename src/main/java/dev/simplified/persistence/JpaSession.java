@@ -6,6 +6,7 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.collection.ConcurrentSet;
+import dev.simplified.collection.sort.Graph;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
@@ -22,8 +23,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -94,9 +93,9 @@ public final class JpaSession {
     private final @NotNull JpaConfig config;
 
     /**
-     * Every registered type linking into each registered type, directly or through another.
+     * The registered types, with an edge from each one to every registered type it links into.
      */
-    private final @NotNull ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> dependents;
+    private final @NotNull Graph<Class<JpaModel>> links;
 
     /**
      * The fingerprint the source answered for each type before the read that produced its held
@@ -120,11 +119,12 @@ public final class JpaSession {
      *
      * @param config the registered models and the source they are read from
      * @throws JpaException if a registered type, or a type one reaches through eager single-valued
-     *         associations, declares a field a held generation cannot follow
+     *         associations, declares a collection-valued, element-collection or lazy association, or a
+     *         link or association naming no model it can resolve to
      */
     JpaSession(@NotNull JpaConfig config) {
         this.config = config;
-        this.dependents = dependentsOf(config.models());
+        this.links = linksOf(config.models());
     }
 
     /**
@@ -203,7 +203,7 @@ public final class JpaSession {
 
     /**
      * Lists the types a rebuild of the given ones covers: each of them and every registered type
-     * linking into one of them.
+     * linking into one of them, directly or through another registered type.
      *
      * @param asked the registered types asked to rebuild
      * @return the covered types, in registration order
@@ -213,7 +213,7 @@ public final class JpaSession {
 
         asked.forEach(type -> {
             covered.add(type);
-            covered.addAll(this.dependents.getOrDefault(type, Concurrent.newSet()));
+            covered.addAll(this.links.ancestors(type));
         });
 
         return this.config.models()
@@ -488,91 +488,42 @@ public final class JpaSession {
     }
 
     /**
-     * Maps each registered type to every registered type linking into it, directly or through
-     * another, refusing a type that declares, or reaches a type declaring, a field a held generation
-     * cannot follow.
+     * Builds the graph of links between the registered types, refusing a type that declares, or
+     * reaches a type declaring, a field a held generation cannot follow.
      *
-     * <p>An edge is a {@link Linked} field, or a single-valued JPA association - {@link ManyToOne} or
-     * {@link OneToOne} - whose target a registered type answers for. A field declaring
-     * {@link OneToMany}, {@link ManyToMany} or {@link ElementCollection}, or a single-valued
-     * association fetched {@link FetchType#LAZY}, is refused rather than followed or skipped, on a
-     * registered type and on every unregistered type its eager associations reach. The walk records
-     * each dependent once, so a cycle ends with every type on it in the others' sets and adds nothing
-     * further.
+     * <p>An edge runs from a registered type to the registered type answering for the target of one
+     * of its fields: a {@link Linked} field, or a single-valued JPA association - {@link ManyToOne} or
+     * {@link OneToOne}. A field declaring {@link OneToMany}, {@link ManyToMany} or
+     * {@link ElementCollection}, or a single-valued association fetched {@link FetchType#LAZY}, is
+     * refused rather than followed or skipped, on a registered type and on every unregistered type
+     * its eager associations reach. Every type is checked while the graph is built, so a refusal is
+     * thrown before anything is read.
+     *
+     * <p>A cycle is not refused. {@link Graph#ancestors} answers over one, so a rebuild of any type
+     * on it covers every other.
      *
      * @param models the registered types
-     * @return the transitive dependents of every type something links into
+     * @return the links, with an edge from each registered type to every registered type it links
+     *         into
      * @throws JpaException if a registered type, or a type one reaches through eager single-valued
      *         associations, declares a collection-valued, element-collection or lazy association, or a
      *         link or association naming no model it can resolve to
      */
-    private static @NotNull ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> dependentsOf(
-        @NotNull ConcurrentList<Class<JpaModel>> models
-    ) {
-        // TODO: once the collections pin carries Graph.ancestors, hand this walk to Graph:
-        //  - the dependents field becomes `private final @NotNull Graph<Class<JpaModel>> links`,
-        //    built in the constructor by linksOf(config.models())
-        //  - hydrate asks `covered.addAll(this.links.ancestors(type))` in place of the
-        //    dependents.getOrDefault lookup
-        //  - this method becomes linksOf, which refuses the fields a held generation cannot follow,
-        //    builds the edges and leaves the closure below to Graph.ancestors - every node reaching
-        //    the target along one or more edges, so a type on a cycle stays in its own set, as it
-        //    does here
-        //  - Graph's builder applies the edge function to every value in build(), so the refusal
-        //    still runs in the constructor, before anything is read
-        //  - the ArrayDeque and Deque imports go with the walk
-        //
-        //    private static @NotNull Graph<Class<JpaModel>> linksOf(@NotNull ConcurrentList<Class<JpaModel>> models) {
-        //        return Graph.<Class<JpaModel>>builder()
-        //            .withValues(models)
-        //            .withEdgeFunction(model -> {
-        //                ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
-        //                refuseUnfollowable(models, model, model, "", Concurrent.newSet());
-        //
-        //                return Stream.concat(
-        //                        JpaRepository.links(model).stream(),
-        //                        fields.stream().filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
-        //                    )
-        //                    .map(JpaRepository::targetOf)
-        //                    .flatMap(target -> registered(models, target).stream());
-        //            })
-        //            .build();
-        //    }
-        //
-        //  JpaSessionRebuildTest pins the transitive and cyclic rebuilds the swap has to keep, and
-        //  SessionManagerTest the refusals.
-        ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> direct = Concurrent.newMap();
+    private static @NotNull Graph<Class<JpaModel>> linksOf(@NotNull ConcurrentList<Class<JpaModel>> models) {
+        return Graph.<Class<JpaModel>>builder()
+            .withValues(models)
+            .withEdgeFunction(model -> {
+                ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
+                refuseUnfollowable(models, model, model, "", Concurrent.newSet());
 
-        for (Class<JpaModel> model : models) {
-            ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
-            refuseUnfollowable(models, model, model, "", Concurrent.newSet());
-
-            Stream.concat(
-                    JpaRepository.links(model).stream(),
-                    fields.stream().filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
-                )
-                .map(JpaRepository::targetOf)
-                .flatMap(target -> registered(models, target).stream())
-                .forEach(target -> direct.computeIfAbsent(target, key -> Concurrent.newSet()).add(model));
-        }
-
-        ConcurrentMap<Class<JpaModel>, ConcurrentSet<Class<JpaModel>>> closed = Concurrent.newMap();
-
-        for (Class<JpaModel> target : direct.keySet()) {
-            ConcurrentSet<Class<JpaModel>> seen = Concurrent.newSet();
-            Deque<Class<JpaModel>> pending = new ArrayDeque<>(direct.get(target));
-
-            while (!pending.isEmpty()) {
-                Class<JpaModel> dependent = pending.pop();
-
-                if (seen.add(dependent))
-                    pending.addAll(direct.getOrDefault(dependent, Concurrent.newSet()));
-            }
-
-            closed.put(target, seen);
-        }
-
-        return closed;
+                return Stream.concat(
+                        JpaRepository.links(model).stream(),
+                        fields.stream().filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
+                    )
+                    .map(JpaRepository::targetOf)
+                    .flatMap(target -> registered(models, target).stream());
+            })
+            .build();
     }
 
     /**
