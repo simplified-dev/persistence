@@ -1,13 +1,11 @@
 package dev.simplified.persistence;
 
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.model.TestChildModel;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.WriteRequest;
-import dev.simplified.util.Logging;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +40,8 @@ class JpaCacheTest {
         this.database = H2MemoryDriver.named("jpa_cache_test")
             .isUsingStatistics()
             .withCacheExpiryMs(2000)
-            .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(models)
+            .build();
         this.session = this.sessionManager.connect(new JpaConfig(models, this.database));
     }
 

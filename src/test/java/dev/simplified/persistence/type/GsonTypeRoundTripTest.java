@@ -3,7 +3,6 @@ package dev.simplified.persistence.type;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
-import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.JpaConfig;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.SessionManager;
@@ -15,7 +14,6 @@ import dev.simplified.persistence.model.GsonFixtureModel.Substitute;
 import dev.simplified.persistence.model.GsonFixtureModel;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.RelationalSource;
-import dev.simplified.util.Logging;
 import org.hibernate.Session;
 import org.hibernate.mapping.BasicValue;
 import org.hibernate.mapping.PersistentClass;
@@ -63,10 +61,11 @@ class GsonTypeRoundTripTest {
     @BeforeAll
     static void open() {
         database = H2MemoryDriver.named("gson_type_round_trip")
-            .isUsing2ndLevelCache(false)
-            .isUsingQueryCache(false)
+            .withUsing2ndLevelCache(false)
+            .withUsingQueryCache(false)
             .withCacheExpiryMs(0)
-            .open(JpaModel.resolveModels(GsonFixtureModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(JpaModel.resolveModels(GsonFixtureModel.class))
+            .build();
     }
 
     @AfterAll
@@ -533,10 +532,11 @@ class GsonTypeRoundTripTest {
             SessionManager manager = new SessionManager();
             ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(FloatingOptionalModel.class);
             RelationalSource floating = H2MemoryDriver.named("floating_optional")
-                .isUsing2ndLevelCache(false)
-                .isUsingQueryCache(false)
+                .withUsing2ndLevelCache(false)
+                .withUsingQueryCache(false)
                 .withCacheExpiryMs(0)
-                .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+                .withModels(models)
+                .build();
 
             try {
                 // Schema export logs the failed CREATE and carries on, so the table is absent. The

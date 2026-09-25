@@ -1,6 +1,8 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
@@ -13,13 +15,12 @@ import java.nio.file.Path;
  * schema is brought up to the mapping on connect rather than created and dropped around it.
  */
 @Getter
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class H2FileDriver implements JpaDriver {
 
     private final @NotNull String dialectClass = "org.hibernate.dialect.H2Dialect";
     private final @NotNull String classPath = "org.h2.Driver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.UPDATE;
-
-    private H2FileDriver() {}
 
     /**
      * Names a file database.
@@ -28,7 +29,10 @@ public final class H2FileDriver implements JpaDriver {
      * @return a builder over that database
      */
     public static @NotNull RelationalSource.Builder at(@NotNull Path path) {
-        return RelationalSource.of(new H2FileDriver(), String.format("jdbc:h2:file:%s", path));
+        return RelationalSource.builder()
+            .withDriver(new H2FileDriver())
+            .withUrl(String.format("jdbc:h2:file:%s", path))
+            .build();
     }
 
 }

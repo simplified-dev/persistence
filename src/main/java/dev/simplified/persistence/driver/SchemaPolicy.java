@@ -1,5 +1,7 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.RequiredArgsConstructor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -11,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
  * and one generated here has no reason to inherit the 255 a mapping defaults to when what it holds is
  * unpredictable.
  */
+@RequiredArgsConstructor
 public enum SchemaPolicy {
 
     /**
@@ -30,18 +33,10 @@ public enum SchemaPolicy {
      */
     UPDATE("update");
 
-    private final @Nullable String hbm2ddl;
-
-    SchemaPolicy(@Nullable String hbm2ddl) {
-        this.hbm2ddl = hbm2ddl;
-    }
-
     /**
      * The {@code hibernate.hbm2ddl.auto} value this policy asks for, or {@code null} to set none.
      */
-    public @Nullable String getHbm2ddl() {
-        return this.hbm2ddl;
-    }
+    @Getter private final @Nullable String hbm2ddl;
 
     /**
      * Whether the schema is generated from the mapping rather than read as it stands.
