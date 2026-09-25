@@ -1,5 +1,6 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.persistence.source.Connection;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
@@ -8,10 +9,11 @@ import org.jetbrains.annotations.NotNull;
  * its schema.
  *
  * <p>Three constants and nothing else. Where a particular database is, and what credentials reach it,
- * belong to a {@link RelationalSource} - and each implementation names the database it can address
- * through a static of its own, so an in-memory database has nowhere to put a host and a networked one
- * cannot be reached without a password.
+ * belong to its {@link Connection} - and each implementation fills one in through a static of its own
+ * that answers the {@link RelationalSource.Builder} it leads into, so an in-memory database has nowhere
+ * to put a host and a networked one cannot be reached without its credentials.
  *
+ * @see Connection
  * @see RelationalSource
  * @see SchemaPolicy
  */

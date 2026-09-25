@@ -28,7 +28,10 @@ public final class H2FileDriver implements JpaDriver {
      * @return a builder over that database
      */
     public static @NotNull RelationalSource.Builder at(@NotNull Path path) {
-        return RelationalSource.of(new H2FileDriver(), String.format("jdbc:h2:file:%s", path));
+        return RelationalSource.builder()
+            .withDriver(new H2FileDriver())
+            .withUrl(String.format("jdbc:h2:file:%s", path))
+            .build();
     }
 
 }

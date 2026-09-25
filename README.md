@@ -104,19 +104,21 @@ public class User implements JpaModel {
 }
 ```
 
-Open a database and connect a session over it. The caller opens the database and hands it to the session as the source every registered type is read from:
+Open a database and connect a session over it. The caller opens the database and hands it to the session as the source every registered type is read from. A driver's static fills in the connection - the driver, the url it renders, and the account where the database takes one - and answers the builder that opens it:
 
 ```java
 ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(User.class);
-RelationalSource database = MariaDbDriver.at("localhost", "mydb")
-    .as("root", "secret")
-    .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+RelationalSource database = MariaDbDriver.at("localhost", "mydb", new Connection.Credentials("root", "secret"))
+    .withModels(models)
+    .build();
 
 SessionManager sessionManager = new SessionManager();
 sessionManager.connect(new JpaConfig(models, database));
 ```
 
-The list `open` maps and the list a `JpaConfig` registers are separate: a type registered with the session holds a generation in memory, while a mapped type left out of it is reached through the database's own Hibernate access.
+The builder defaults to both Hibernate caches on, the default `GsonSettings` parser and logging at `WARN`; `withGson`, `withLogLevel` and the cache setters change them. For a driver with no static of its own, `RelationalSource.builder()` takes the connection directly - `withDriver`, `withUrl`, `withCredentials` - and its `build()` leads into the same builder.
+
+The list `withModels` maps and the list a `JpaConfig` registers are separate: a type registered with the session holds a generation in memory, while a mapped type left out of it is reached through the database's own Hibernate access.
 
 Query the held rows, and write through the session so the generation follows the write:
 

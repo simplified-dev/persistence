@@ -1,6 +1,7 @@
 package dev.simplified.persistence.driver;
 
 import dev.simplified.annotations.Getter;
+import dev.simplified.persistence.source.Connection;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
@@ -26,10 +27,11 @@ public final class MariaDbDriver implements JpaDriver {
      *
      * @param host the server hostname or address
      * @param schema the schema name
-     * @return the step that takes the credentials
+     * @param credentials the account it is reached with
+     * @return a builder over that database
      */
-    public static @NotNull RelationalSource.Authenticating at(@NotNull String host, @NotNull String schema) {
-        return at(host, DEFAULT_PORT, schema);
+    public static @NotNull RelationalSource.Builder at(@NotNull String host, @NotNull String schema, @NotNull Connection.Credentials credentials) {
+        return at(host, DEFAULT_PORT, schema, credentials);
     }
 
     /**
@@ -38,13 +40,15 @@ public final class MariaDbDriver implements JpaDriver {
      * @param host the server hostname or address
      * @param port the port the server listens on
      * @param schema the schema name
-     * @return the step that takes the credentials
+     * @param credentials the account it is reached with
+     * @return a builder over that database
      */
-    public static @NotNull RelationalSource.Authenticating at(@NotNull String host, int port, @NotNull String schema) {
-        return RelationalSource.authenticating(
-            new MariaDbDriver(),
-            String.format("jdbc:mariadb://%s:%s/%s", host, port, schema)
-        );
+    public static @NotNull RelationalSource.Builder at(@NotNull String host, int port, @NotNull String schema, @NotNull Connection.Credentials credentials) {
+        return RelationalSource.builder()
+            .withDriver(new MariaDbDriver())
+            .withUrl(String.format("jdbc:mariadb://%s:%s/%s", host, port, schema))
+            .withCredentials(credentials)
+            .build();
     }
 
 }

@@ -2,7 +2,6 @@ package dev.simplified.persistence;
 
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
-import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.linked.LinkedParent;
@@ -11,7 +10,6 @@ import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
-import dev.simplified.util.Logging;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -66,7 +64,8 @@ class JpaSessionHydrationTest {
     private @NotNull JpaSession connect(@NotNull String schema) {
         ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(TestParentModel.class);
         this.database = H2MemoryDriver.named(schema)
-            .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(models)
+            .build();
 
         return this.connect(this.database);
     }
@@ -130,7 +129,8 @@ class JpaSessionHydrationTest {
     @DisplayName("a type the database maps but the session does not register is reached through the database")
     void aMappedTypeNeedNotBeRegistered() {
         this.database = H2MemoryDriver.named("hydration_mapped_only")
-            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(JpaModel.resolveModels(TestParentModel.class))
+            .build();
 
         TestParentModel parent = new TestParentModel();
         parent.setId(1);
@@ -176,7 +176,8 @@ class JpaSessionHydrationTest {
     @DisplayName("a registered type the database does not map fails the connect, naming the type")
     void aRegisteredTypeMustBeMapped() {
         this.database = H2MemoryDriver.named("hydration_unmapped")
-            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(JpaModel.resolveModels(TestParentModel.class))
+            .build();
         this.sessionManager = new SessionManager();
 
         JpaException thrown = assertThrows(

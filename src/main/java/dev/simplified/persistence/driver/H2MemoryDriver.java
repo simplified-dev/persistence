@@ -29,10 +29,10 @@ public final class H2MemoryDriver implements JpaDriver {
      * @return a builder over that database
      */
     public static @NotNull RelationalSource.Builder named(@NotNull String name) {
-        return RelationalSource.of(
-            new H2MemoryDriver(),
-            String.format("jdbc:h2:mem:%s;DB_CLOSE_DELAY=-1", name)
-        );
+        return RelationalSource.builder()
+            .withDriver(new H2MemoryDriver())
+            .withUrl(String.format("jdbc:h2:mem:%s;DB_CLOSE_DELAY=-1", name))
+            .build();
     }
 
 }

@@ -2,14 +2,13 @@ package dev.simplified.persistence.source;
 
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
-import dev.simplified.gson.GsonSettings;
 import dev.simplified.persistence.CacheMissingStrategy;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.driver.H2MemoryDriver;
+import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.model.TestParentModel;
 import dev.simplified.persistence.proxied.ProxiedRow;
 import dev.simplified.persistence.refused.RefusedModel;
-import dev.simplified.util.Logging;
 import jakarta.persistence.criteria.CriteriaQuery;
 import org.ehcache.jsr107.EhcacheCachingProvider;
 import org.hibernate.SessionFactory;
@@ -53,10 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * An opened database: the settings its builder carries reaching Hibernate, the rows a read hands
- * back, what a failed open leaves behind, a close that leaves every other open database caching, the
- * shutdown hook that holds an open one, and a close that can be repeated and leaves nothing the JVM
- * holds.
+ * An opened database: the settings its builder carries reaching Hibernate, a builder missing its
+ * driver or its models refused, the rows a read hands back, what a failed open leaves behind, a close
+ * that leaves every other open database caching, the shutdown hook that holds an open one, and a close
+ * that can be repeated and leaves nothing the JVM holds.
  */
 @Tag("slow")
 class RelationalSourceTest {
@@ -95,7 +94,8 @@ class RelationalSourceTest {
             .withCacheMissingStrategy(CacheMissingStrategy.CREATE)
             .withQueryResultsTTL(7)
             .withCacheExpiryMs(5000)
-            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(JpaModel.resolveModels(TestParentModel.class))
+            .build();
 
         try {
             SessionFactory factory = factoryOf(database);
@@ -166,12 +166,29 @@ class RelationalSourceTest {
         assertThrows(
             RuntimeException.class,
             () -> H2MemoryDriver.named("relational_source_refused")
-                .open(JpaModel.resolveModels(RefusedModel.class), GsonSettings.defaults().create(), Logging.Level.WARN)
+                .withModels(JpaModel.resolveModels(RefusedModel.class))
+                .build()
         );
 
         // The type's region is created before Hibernate builds the metadata that refuses it, in a
         // manager of the database's own, so none ever reaches the provider's default manager.
         assertThat(defaultCacheManager().getCache(RefusedModel.class.getName(), Object.class, Object.class), nullValue());
+    }
+
+    @Test
+    @DisplayName("a connection naming no driver, and a database given no models to map, are refused before anything opens")
+    void anIncompleteBuilderIsRefused() {
+        JpaException noDriver = assertThrows(
+            JpaException.class,
+            () -> RelationalSource.builder().withUrl("jdbc:h2:mem:relational_source_incomplete").build()
+        );
+        JpaException noModels = assertThrows(
+            JpaException.class,
+            () -> H2MemoryDriver.named("relational_source_incomplete").build()
+        );
+
+        assertThat(noDriver.getMessage(), equalTo("A connection names no driver"));
+        assertThat(noModels.getMessage(), equalTo("A relational source names no models to map"));
     }
 
     @Test
@@ -301,9 +318,10 @@ class RelationalSourceTest {
     private static @NotNull RelationalSource openParents(@NotNull String name, boolean caching) {
         return H2MemoryDriver.named(name)
             .isUsingStatistics()
-            .isUsingQueryCache(caching)
-            .isUsing2ndLevelCache(caching)
-            .open(JpaModel.resolveModels(TestParentModel.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withUsingQueryCache(caching)
+            .withUsing2ndLevelCache(caching)
+            .withModels(JpaModel.resolveModels(TestParentModel.class))
+            .build();
     }
 
     /**
@@ -319,7 +337,8 @@ class RelationalSourceTest {
      */
     private static @NotNull RelationalSource openProxied(@NotNull String name) {
         RelationalSource database = H2MemoryDriver.named(name)
-            .open(JpaModel.resolveModels(ProxiedRow.class), GsonSettings.defaults().create(), Logging.Level.WARN);
+            .withModels(JpaModel.resolveModels(ProxiedRow.class))
+            .build();
 
         database.transaction(hibernate -> {
             ProxiedRow first = new ProxiedRow();
