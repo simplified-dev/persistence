@@ -4,20 +4,25 @@ Open items after the document/database unification. Each stays here until it is
 closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
 ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
-> #### The connect check does not see getters, embeddables or `@Any`
+> #### The association walk does not see getters, embeddables or `@Any`
 > A session refuses to connect when a registered type, or an unregistered type its eager `@ManyToOne`
-> and `@OneToOne` fields reach, declares an association a held generation cannot follow. The check
-> reads fields only, and names only `@OneToMany`, `@ManyToMany`, `@ElementCollection` and a lazy
-> `@ManyToOne` or `@OneToOne`. A type mapped through property-access getters carries its
-> association annotations on the getters, which the check never reads, so it neither refuses a lazy
-> association there nor follows an eager one. The fields inside an `@Embedded` component are not
-> read, so a lazy association there is not refused and an eager one is not followed. Hibernate's
-> `@Any` and `@ManyToAny` are not among the annotations it names. Any of the three on a registered
-> type, or on a type it reaches, can put an uninitialized proxy or collection into a held
-> generation, which throws `LazyInitializationException` once the read that loaded it has closed.
-> No model in the workspace declares `@Embedded`, `@Access`, `@Any` or `@ManyToAny`.
+> and `@OneToOne` fields reach, declares an association a held generation cannot follow. The walk
+> that checks this reads fields only, and names only `@OneToMany`, `@ManyToMany`,
+> `@ElementCollection` and a lazy `@ManyToOne` or `@OneToOne`. A type mapped through property-access
+> getters carries its association annotations on the getters, which the walk never reads, so it
+> neither refuses a lazy association there nor follows an eager one. The fields inside an
+> `@Embedded` component are not read, so a lazy association there is not refused and an eager one
+> is not followed. Hibernate's `@Any` and `@ManyToAny` are not among the annotations it names. Any
+> of the three on a registered type, or on a type it reaches, can put an uninitialized proxy or
+> collection into a held generation, which throws `LazyInitializationException` once the read that
+> loaded it has closed.
+> The same walk draws a session's rebuild edges for associations, so an eager association it does
+> not read draws none: a registered type reaching another only through a getter, an `@Embedded`
+> component, an `@Any` or a `@ManyToAny` is left out of that type's rebuilds, and keeps the copy it
+> was read with until a rebuild of its own. No model in the workspace declares `@Embedded`,
+> `@Access`, `@Any` or `@ManyToAny`.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:548` - `refuseUnfollowable`
+> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:554` - `follow`, `:517` - `linksOf`
 > - Type: **GAP**
 > - Status: **OPEN**
 
@@ -34,7 +39,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
 >   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:152` -
->   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:399` - `write`;
+>   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`;
 >   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
 > - Type: **RISK**
 > - Status: **OPEN**
@@ -63,8 +68,8 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
 >   `Writing.layersOf`, `:57` - `read`;
->   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:222` - `tip`,
->   `:279` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:399` - `write`
+>   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:266` - `tip`,
+>   `:341` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`
 > - Type: **RISK**
 > - Status: **OPEN**
 

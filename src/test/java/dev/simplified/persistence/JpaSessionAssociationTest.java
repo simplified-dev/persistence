@@ -1,8 +1,11 @@
 package dev.simplified.persistence;
 
+import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.associated.AssociatedRow;
+import dev.simplified.persistence.associated.HopOwner;
 import dev.simplified.persistence.associated.OneToOneOwner;
+import dev.simplified.persistence.associated.UnregisteredHop;
 import dev.simplified.persistence.driver.H2MemoryDriver;
 import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.persistence.source.WriteRequest;
@@ -17,11 +20,13 @@ import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 
 /**
  * Which relational types a write rebuilds through their single-valued associations: a type pairing
  * with the written one through a one-to-one association, as one associating with it through a
- * many-to-one is.
+ * many-to-one is, and a type reaching it only through a type the database maps and the session
+ * leaves unregistered.
  */
 @Tag("slow")
 class JpaSessionAssociationTest {
@@ -33,18 +38,33 @@ class JpaSessionAssociationTest {
     @BeforeEach
     void connect() {
         ConcurrentList<Class<JpaModel>> mapped = JpaModel.resolveModels(AssociatedRow.class);
+        ConcurrentList<Class<JpaModel>> registered = mapped.stream()
+            .filter(type -> !UnregisteredHop.class.equals(type))
+            .collect(Concurrent.toUnmodifiableList());
 
         this.sessionManager = new SessionManager();
         this.database = H2MemoryDriver.named("jpa_session_association_test").withModels(mapped).build();
-        this.session = this.sessionManager.connect(new JpaConfig(mapped, this.database));
+        this.session = this.sessionManager.connect(new JpaConfig(registered, this.database));
 
-        AssociatedRow row = row(1, "one");
+        AssociatedRow row = row("one");
         this.session.write(WriteRequest.upsert(AssociatedRow.class, List.of(row)));
 
         OneToOneOwner paired = new OneToOneOwner();
         paired.setId(1);
         paired.setRow(row);
         this.session.write(WriteRequest.upsert(OneToOneOwner.class, List.of(paired)));
+
+        // The hop is the database's alone, so it is written through the database rather than the
+        // session.
+        UnregisteredHop hop = new UnregisteredHop();
+        hop.setId(1);
+        hop.setRow(row);
+        this.database.write(WriteRequest.upsert(UnregisteredHop.class, List.of(hop)));
+
+        HopOwner owner = new HopOwner();
+        owner.setId(1);
+        owner.setHop(hop);
+        this.session.write(WriteRequest.upsert(HopOwner.class, List.of(owner)));
     }
 
     @AfterEach
@@ -63,9 +83,20 @@ class JpaSessionAssociationTest {
     void aOneToOneOwnerFollowsTheWrite() {
         assertThat(this.held(OneToOneOwner.class).getRow().getName(), equalTo("one"));
 
-        this.session.write(WriteRequest.upsert(AssociatedRow.class, List.of(row(1, "renamed"))));
+        this.session.write(WriteRequest.upsert(AssociatedRow.class, List.of(row("renamed"))));
 
         assertThat(this.held(OneToOneOwner.class).getRow().getName(), equalTo("renamed"));
+    }
+
+    @Test
+    @DisplayName("a write rebuilds a type reaching the written one only through an unregistered type's eager association")
+    void anOwnerBeyondAnUnregisteredHopFollowsTheWrite() {
+        assertThat(this.session.getRepository(UnregisteredHop.class).isPresent(), is(false));
+        assertThat(this.held(HopOwner.class).getHop().getRow().getName(), equalTo("one"));
+
+        this.session.write(WriteRequest.upsert(AssociatedRow.class, List.of(row("renamed"))));
+
+        assertThat(this.held(HopOwner.class).getHop().getRow().getName(), equalTo("renamed"));
     }
 
     /**
@@ -80,15 +111,14 @@ class JpaSessionAssociationTest {
     }
 
     /**
-     * Builds an associated row.
+     * Builds the associated row every owner here reaches, the one with id {@code 1}.
      *
-     * @param id the row's id
      * @param name the row's name
      * @return the row
      */
-    private static @NotNull AssociatedRow row(int id, @NotNull String name) {
+    private static @NotNull AssociatedRow row(@NotNull String name) {
         AssociatedRow row = new AssociatedRow();
-        row.setId(id);
+        row.setId(1);
         row.setName(name);
         return row;
     }

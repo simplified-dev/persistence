@@ -38,9 +38,11 @@ import java.util.stream.Stream;
  * a row before its links resolve. Rebuilds run one at a time.
  *
  * <p>A rebuild covers the types asked for and every registered type that links into one of them,
- * directly or through another, whether by {@link Linked} or by a single-valued JPA association. Once
- * the rebuild completes, a {@link Linked} field holds the instance its target's repository holds, and
- * an association holds a copy read with its owner that carries the target's current row. Publication
+ * directly or through other types, whether by {@link Linked} or by a single-valued JPA association.
+ * An association links into every registered type it reaches, through as many unregistered types as
+ * it passes on the way, because every row along it is read with its owner. Once the rebuild
+ * completes, a {@link Linked} field holds the instance its target's repository holds, and an
+ * association holds a copy read with its owner that carries the target's current row. Publication
  * is per type, so a reader between two types' publication sees one new generation and one old.
  *
  * <p>A registered type declaring a collection-valued association or an element collection -
@@ -203,7 +205,7 @@ public final class JpaSession {
 
     /**
      * Lists the types a rebuild of the given ones covers: each of them and every registered type
-     * linking into one of them, directly or through another registered type.
+     * linking into one of them, directly or through other types.
      *
      * @param asked the registered types asked to rebuild
      * @return the covered types, in registration order
@@ -493,7 +495,10 @@ public final class JpaSession {
      *
      * <p>An edge runs from a registered type to the registered type answering for the target of one
      * of its fields: a {@link Linked} field, or a single-valued JPA association - {@link ManyToOne} or
-     * {@link OneToOne}. A field declaring {@link OneToMany}, {@link ManyToMany} or
+     * {@link OneToOne}. An association into an unregistered type is followed on through that type's
+     * own associations, through as many unregistered types as lie between, and an edge runs as well
+     * to the registered type answering for each type they name, because a copy of its row is read
+     * with the owner's. A field declaring {@link OneToMany}, {@link ManyToMany} or
      * {@link ElementCollection}, or a single-valued association fetched {@link FetchType#LAZY}, is
      * refused rather than followed or skipped, on a registered type and on every unregistered type
      * its eager associations reach. Every type is checked while the graph is built, so a refusal is
@@ -513,44 +518,45 @@ public final class JpaSession {
         return Graph.<Class<JpaModel>>builder()
             .withValues(models)
             .withEdgeFunction(model -> {
-                ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(model).getFields();
-                refuseUnfollowable(models, model, model, "", Concurrent.newSet());
+                ConcurrentSet<Class<? extends JpaModel>> reached = Concurrent.newSet();
+                follow(models, model, model, "", reached);
 
                 return Stream.concat(
-                        JpaRepository.links(model).stream(),
-                        fields.stream().filter(field -> field.hasAnnotation(ManyToOne.class) || field.hasAnnotation(OneToOne.class))
+                        JpaRepository.links(model).stream().map(JpaRepository::targetOf),
+                        reached.stream()
                     )
-                    .map(JpaRepository::targetOf)
                     .flatMap(target -> registered(models, target).stream());
             })
             .build();
     }
 
     /**
-     * Refuses a type declaring a field a held generation cannot follow, then walks on through each of
-     * its single-valued associations into every unregistered type they reach.
+     * Refuses a type declaring a field a held generation cannot follow, then follows each of its
+     * single-valued associations, recording every type one names and walking on into each
+     * unregistered one.
      *
      * <p>An association this check leaves standing is eager, and reads its target with its owner
      * whether or not the target is registered, so a lazy field there fails once the read has closed
-     * just as one on the registered type would. The walk stops at a registered type, which is checked
-     * as itself, and at a type it has already reached, so a cycle ends.
+     * just as one on the registered type would, and a registered type past it arrives in a copy the
+     * owner's rebuild has to read again. The walk stops at a registered type, which is checked and
+     * followed as itself, and at a type it has already reached, so a cycle ends.
      *
      * @param models the registered types
      * @param model the registered type the walk starts from
      * @param type the type to check, {@code model} itself where the walk starts
      * @param path the fields leading from {@code model} to {@code type}, joined by dots, empty where
      *        the walk starts
-     * @param reached the unregistered types the walk has already checked
+     * @param reached every type an association on the walk has named so far, which the walk adds to
      * @throws JpaException if the type, or one it reaches, declares a collection-valued,
      *         element-collection or lazy association, or an association naming no model it can
      *         resolve to
      */
-    private static void refuseUnfollowable(
+    private static void follow(
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Class<JpaModel> model,
         @NotNull Class<? extends JpaModel> type,
         @NotNull String path,
-        @NotNull ConcurrentSet<Class<?>> reached
+        @NotNull ConcurrentSet<Class<? extends JpaModel>> reached
     ) {
         ConcurrentSet<FieldAccessor<?>> fields = new Reflection<>(type).getFields();
 
@@ -584,8 +590,8 @@ public final class JpaSession {
 
             Class<? extends JpaModel> target = JpaRepository.targetOf(field);
 
-            if (!models.contains(target) && reached.add(target))
-                refuseUnfollowable(models, model, target, path.isEmpty() ? field.getName() : path + "." + field.getName(), reached);
+            if (reached.add(target) && !models.contains(target))
+                follow(models, model, target, path.isEmpty() ? field.getName() : path + "." + field.getName(), reached);
         }
     }
 
