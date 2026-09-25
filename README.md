@@ -1,6 +1,6 @@
 # Persistence
 
-JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backed Hibernate type converters, and a repository pattern implementation. Provides read-only cached repositories, session management, per-entity TTL annotations, and support for multiple database drivers.
+JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backed Hibernate types, and a repository pattern implementation. Provides repositories that hold each model's rows in memory, session management, per-type hydration cadences, sources that read rows from a relational database or from layered JSON documents, and support for multiple database drivers.
 
 > [!IMPORTANT]
 > This library is under active development. APIs may change between releases until a stable `1.0.0` is published.
@@ -22,16 +22,16 @@ JPA/Hibernate ORM abstraction layer with L2 caching (EhCache), custom Gson-backe
 
 ## Features
 
-- **Repository pattern** - Read-only cached `Repository` interface with `JpaRepository` implementation for CRUD operations, cache eviction, and stream-based querying
-- **Session management** - `SessionManager` registry for multiple concurrent `JpaSession` instances with cross-session repository lookup, reconnection, and coordinated shutdown
-- **L2 caching** - EhCache-backed second-level cache with per-entity TTL via `@CacheExpiry` annotation and configurable cache concurrency strategies
-- **Custom Hibernate types** - Gson-backed type converters for JSON columns (`GsonJsonType`, `GsonListType`, `GsonMapType`, `GsonOptionalType`)
+- **Repository pattern** - `Repository` holds one generation of a model's rows in memory; every `Sortable` finder answers from it without I/O, and a property declaring `@Indexed` is answered by a hash probe
+- **Sessions** - `JpaSession` hydrates every type a `JpaConfig` registers from its one `Source`, resolves links before it publishes a generation, and rebuilds a written type together with every type that links into it
+- **Session management** - `SessionManager` registers a session once it has hydrated, looks repositories up and routes writes across every session it holds, and shuts them down together
+- **Hydration cadence** - `@Hydration` declares how often a type is checked against its source in the background and when its generation reports stale; a due type whose source fingerprint has not moved is not read, one that moved is rebuilt with every type linking into it, and a source that fingerprints nothing rebuilds every due type. A type declaring none has no cadence of its own, and is rebuilt when it or a type it links into is written through its session, or when a type it links into comes due on its own cadence and has moved
+- **Links** - `@Linked` fills a field with the row, or rows, its id property names, and keeps that field out of serialization
+- **Sources** - One `Source` contract for where a type's rows come from: `RelationalSource` over a database, `DocumentSource` over the layered JSON documents a `DocumentOrigin` names, and `Source.Writable` - `RelationalSource` and `DocumentSource.Writable` - for a source that also takes writes
+- **L2 caching** - EhCache-backed second-level cache for an open database, held in a cache manager no other database shares, with one TTL for every mapped type and configurable cache concurrency strategies
+- **Custom Hibernate types** - `GsonValueType` with a codec per field shape (annotated class, `List<E>`, `Map<K, V>`, `Optional<I>`) for JSON columns
 - **Multiple database drivers** - MariaDB, H2 (file, memory, TCP), Oracle Thin, PostgreSQL, SQL Server
-- **Type converters** - Built-in JPA attribute converters for `Color`, `UUID`, and Unicode strings
-- **JSON persistence sources** - `Source` interface with `JsonSource` implementation for file-based data loading
-- **Repository factory** - `RepositoryFactory` with topological entity sorting, per-type source registration, and classpath-based model discovery
-- **Foreign ID resolution** - `@ForeignIds` transient field population for cross-entity relationships loaded from non-relational sources
-- **Stale entity cleanup** - Automatic removal of database rows not present in the latest source load, in FK-safe reverse topological order
+- **Type converters** - Built-in auto-applied JPA attribute converter for `UUID`
 
 ## Getting Started
 
@@ -84,18 +84,19 @@ dependencies {
 
 ## Usage
 
-Define a JPA entity model:
+Define a model:
 
 ```java
-import dev.simplified.persistence.CacheExpiry;
+import dev.simplified.persistence.Hydration;
 import dev.simplified.persistence.JpaModel;
 import jakarta.persistence.*;
 
 import java.util.concurrent.TimeUnit;
 
 @Entity
-@CacheExpiry(duration = 5, unit = TimeUnit.MINUTES)
-public class User extends JpaModel {
+@Table(name = "users")
+@Hydration(every = 5, unit = TimeUnit.MINUTES)
+public class User implements JpaModel {
 
     @Id
     private Long id;
@@ -103,31 +104,51 @@ public class User extends JpaModel {
 }
 ```
 
-Configure and connect a session:
+Open a database and connect a session over it. The caller opens the database and hands it to the session as the source every registered type is read from:
 
 ```java
-import dev.simplified.persistence.JpaConfig;
-import dev.simplified.persistence.SessionManager;
-import dev.simplified.persistence.driver.MariaDbDriver;
-
-JpaConfig config = JpaConfig.common(new MariaDbDriver(), "mydb")
-    .withHost("localhost")
-    .withPort(3306)
-    .withUser("root")
-    .withPassword("secret")
-    .build();
+ConcurrentList<Class<JpaModel>> models = JpaModel.resolveModels(User.class);
+RelationalSource database = MariaDbDriver.at("localhost", "mydb")
+    .as("root", "secret")
+    .open(models, GsonSettings.defaults().create(), Logging.Level.WARN);
 
 SessionManager sessionManager = new SessionManager();
-sessionManager.connect(config);
+sessionManager.connect(new JpaConfig(models, database));
 ```
 
-Query cached data through the repository:
+The list `open` maps and the list a `JpaConfig` registers are separate: a type registered with the session holds a generation in memory, while a mapped type left out of it is reached through the database's own Hibernate access.
+
+Query the held rows, and write through the session so the generation follows the write:
 
 ```java
-import dev.simplified.persistence.Repository;
+Repository<User> users = sessionManager.getRepository(User.class);
+ConcurrentList<User> all = users.findAll();
 
-Repository<User> userRepo = sessionManager.getRepository(User.class);
-ConcurrentList<User> users = userRepo.findAll();
+sessionManager.write(WriteRequest.upsert(User.class, List.of(user)));
+```
+
+Reach Hibernate through the database, and shut down in order:
+
+```java
+database.transaction(session -> {
+    session.persist(archived);
+});
+
+sessionManager.shutdown();
+database.close();
+```
+
+A write that goes straight to Hibernate like this bypasses the session, so a type the session registers keeps the rows it held until its next rebuild; write a registered type through the session instead.
+
+Shutting down is optional. A `SessionManager` holding a session and a `RelationalSource` still open each register a JVM shutdown hook, which shuts the sessions down and closes the database at exit; shutting down explicitly releases them earlier and removes the hooks. Sessions go first, because a session reading a closed database fails its next write, rebuild or tick. The JVM runs shutdown hooks concurrently, so a rebuild or tick still running at exit can fail against a database that is closing.
+
+A session over layered JSON documents opens nothing and closes nothing - the source is built and handed in:
+
+```java
+sessionManager.connect(new JpaConfig(
+    JpaModel.resolveModels(Item.class),
+    new DocumentSource(origin, GsonSettings.defaults().create())
+));
 ```
 
 ## Supported Drivers
@@ -151,12 +172,12 @@ ConcurrentList<User> users = userRepo.findAll();
 
 | Package | Description |
 |---------|-------------|
-| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `RepositoryFactory`, `JpaConfig`, `JpaModel`, `@CacheExpiry`) |
-| `dev.simplified.persistence.converter` | JPA attribute converters (`ColorConverter`, `UUIDConverter`, `UnicodeConverter`) |
+| `dev.simplified.persistence` | Core interfaces and classes (`Repository`, `JpaRepository`, `JpaSession`, `SessionManager`, `JpaConfig`, `JpaModel`, `@Hydration`, `@Linked`) |
+| `dev.simplified.persistence.converter` | JPA attribute converters (`UUIDConverter`) |
 | `dev.simplified.persistence.driver` | Database driver abstraction with implementations for MariaDB, H2, Oracle, PostgreSQL, SQL Server |
 | `dev.simplified.persistence.exception` | `JpaException` for persistence-related errors |
-| `dev.simplified.persistence.source` | Data source interfaces and JSON file-based implementation |
-| `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonJsonType`, `GsonListType`, `GsonMapType`, `GsonOptionalType`, `GsonType`) with type and converter registrars |
+| `dev.simplified.persistence.source` | Where a type's rows come from and how they go back (`Source`, `DocumentSource`, `RelationalSource`, `DocumentOrigin`, `WriteRequest`) |
+| `dev.simplified.persistence.type` | Gson-backed custom Hibernate types (`GsonValueType`, `GsonType`) with type and converter registrars |
 
 ### Project Structure
 
@@ -164,21 +185,20 @@ ConcurrentList<User> users = userRepo.findAll();
 persistence/
 ├── src/
 │   ├── main/java/dev/simplified/persistence/
-│   │   ├── CacheExpiry.java
 │   │   ├── CacheMissingStrategy.java
-│   │   ├── ForeignIds.java
+│   │   ├── Hydration.java
+│   │   ├── HydrationState.java
 │   │   ├── JpaConfig.java
 │   │   ├── JpaExclusionStrategy.java
+│   │   ├── JpaGsonContributor.java
 │   │   ├── JpaModel.java
 │   │   ├── JpaRepository.java
 │   │   ├── JpaSession.java
+│   │   ├── Linked.java
 │   │   ├── Repository.java
-│   │   ├── RepositoryFactory.java
 │   │   ├── SessionManager.java
 │   │   ├── converter/
-│   │   │   ├── ColorConverter.java
-│   │   │   ├── UUIDConverter.java
-│   │   │   └── UnicodeConverter.java
+│   │   │   └── UUIDConverter.java
 │   │   ├── driver/
 │   │   │   ├── H2FileDriver.java
 │   │   │   ├── H2MemoryDriver.java
@@ -191,16 +211,18 @@ persistence/
 │   │   ├── exception/
 │   │   │   └── JpaException.java
 │   │   ├── source/
-│   │   │   ├── JsonSource.java
-│   │   │   └── Source.java
+│   │   │   ├── DocumentOrigin.java
+│   │   │   ├── DocumentSource.java
+│   │   │   ├── RelationalSource.java
+│   │   │   ├── Source.java
+│   │   │   └── WriteRequest.java
 │   │   └── type/
 │   │       ├── ConverterRegistrar.java
-│   │       ├── GsonJsonType.java
-│   │       ├── GsonListType.java
-│   │       ├── GsonMapType.java
-│   │       ├── GsonOptionalType.java
 │   │       ├── GsonType.java
+│   │       ├── GsonValueType.java
 │   │       └── TypeRegistrar.java
+│   ├── main/resources/META-INF/services/
+│   │   └── dev.simplified.gson.GsonContributor
 │   └── test/
 ├── build.gradle.kts
 ├── gradle/
@@ -221,14 +243,17 @@ persistence/
 | [EhCache](https://www.ehcache.org/) | 3.10.8 | Implementation |
 | [Log4j2](https://logging.apache.org/log4j/) | 2.25.3 | API (log level configuration and `@Log4j2` logging) |
 | [JetBrains Annotations](https://github.com/JetBrains/java-annotations) | 26.0.2 | API |
-| [Simplified Annotations](https://github.com/Simplified-Dev/annotations) | 2.6.0 | Compile-only |
+| [Simplified Annotations](https://github.com/Simplified-Dev/annotations) | 2.6.1 | Compile-only |
 | [JUnit 5](https://junit.org/junit5/) | 5.11.4 | Test |
 | [Hamcrest](http://hamcrest.org/) | 2.2 | Test |
-| [collections](https://github.com/Simplified-Dev/collections) | master-SNAPSHOT | API (Simplified-Dev) |
-| [utils](https://github.com/Simplified-Dev/utils) | master-SNAPSHOT | API (Simplified-Dev) |
-| [reflection](https://github.com/Simplified-Dev/reflection) | master-SNAPSHOT | API (Simplified-Dev) |
-| [gson-extras](https://github.com/Simplified-Dev/gson-extras) | master-SNAPSHOT | API (Simplified-Dev) |
-| [scheduler](https://github.com/Simplified-Dev/scheduler) | master-SNAPSHOT | API (Simplified-Dev) |
+| [collections](https://github.com/Simplified-Dev/collections) | pinned commit | API (Simplified-Dev) |
+| [utils](https://github.com/Simplified-Dev/utils) | pinned commit | API (Simplified-Dev) |
+| [reflection](https://github.com/Simplified-Dev/reflection) | pinned commit | API (Simplified-Dev) |
+| [gson-extras](https://github.com/Simplified-Dev/gson-extras) | pinned commit | API (Simplified-Dev) |
+| [scheduler](https://github.com/Simplified-Dev/scheduler) | pinned commit | API (Simplified-Dev) |
+
+> [!NOTE]
+> The Simplified-Dev dependencies are pinned to exact JitPack commits rather than to a moving branch. See [`build.gradle.kts`](build.gradle.kts) for the current hashes.
 
 ## Contributing
 

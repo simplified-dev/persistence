@@ -2,18 +2,19 @@ package dev.simplified.persistence;
 
 import com.google.gson.ExclusionStrategy;
 import com.google.gson.FieldAttributes;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToMany;
 import org.jetbrains.annotations.NotNull;
 import org.jspecify.annotations.NonNull;
 
 /**
- * Gson {@link ExclusionStrategy} that excludes fields annotated with JPA
- * relationship annotations ({@link ManyToOne}, {@link OneToMany}) from
- * serialization.
+ * Gson {@link ExclusionStrategy} that excludes a field holding rows another document owns.
  *
- * <p>This prevents infinite recursion and unnecessary eager loading when
- * serializing JPA entities to JSON.</p>
+ * <p>A row carries the id of what it points at and never the thing itself, so a field that resolves
+ * to entities is absent from the wire in both directions. Including one would recurse on the way out
+ * and would fail to bind an id to an object on the way in.
+ *
+ * <p>{@link Linked} is the declaration that says so, which is why it carries the exclusion as well as
+ * the resolution - a write that serialized a resolved link would put a whole entity graph into a
+ * document that owns only the id.
  */
 public final class JpaExclusionStrategy implements ExclusionStrategy {
 
@@ -26,8 +27,7 @@ public final class JpaExclusionStrategy implements ExclusionStrategy {
 
     @Override
     public boolean shouldSkipField(@NonNull FieldAttributes f) {
-        return f.getAnnotation(ManyToOne.class) != null
-            || f.getAnnotation(OneToMany.class) != null;
+        return f.getAnnotation(Linked.class) != null;
     }
 
     @Override

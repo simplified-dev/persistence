@@ -1,71 +1,76 @@
 package dev.simplified.persistence;
 
-import dev.simplified.persistence.exception.JpaException;
-import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
+import dev.simplified.collection.query.IndexCache;
+import dev.simplified.collection.query.Indexed;
 import dev.simplified.collection.query.Sortable;
 import dev.simplified.collection.tuple.single.SingleStream;
-import dev.simplified.util.time.Stopwatch;
+import dev.simplified.persistence.exception.JpaException;
 import org.jetbrains.annotations.NotNull;
 
-import java.time.Duration;
+import java.time.Instant;
 
 /**
- * Read-only query interface for cached JPA entities, extending {@link Sortable}
- * for predicate-based searching and sorting support.
+ * One generation of a model's rows, and the indexes over them.
  *
- * <p>Implementations query the Hibernate L2 cache, which is backed by JCache
- * regions with per-entity TTL derived from {@link CacheExpiry} annotations.
- * When cache entries expire, Hibernate transparently re-queries the database.
+ * <p>Every finder {@link Sortable} offers is written over {@link #stream()}, and every equality finder
+ * reaches {@link #indexes()} first, so holding the rows is what answers all of them. A property
+ * declaring {@link Indexed} is a hash probe; anything else is a scan over rows already in memory.
+ * Neither reaches a database.
+ *
+ * <p>Where the rows came from - a JSON document, a remote corpus, a database table - is the source's
+ * business and is not visible here.
  *
  * @param <T> the entity type, which must implement {@link JpaModel}
  */
 public interface Repository<T extends JpaModel> extends Sortable<T> {
 
     /**
-     * The cache refresh duration derived from the {@link CacheExpiry} annotation.
-     */
-    @NotNull Duration getCacheDuration();
-
-    /**
-     * The {@link CacheExpiry} annotation for this repository's entity type, or {@link CacheExpiry#DEFAULT} if not annotated.
-     */
-    @NotNull CacheExpiry getCacheExpiry();
-
-    /**
-     * The timing snapshot of the initial data load performed during repository construction.
-     */
-    @NotNull Stopwatch getInitialLoad();
-
-    /**
-     * The timing snapshot of the most recent cache refresh.
-     */
-    @NotNull Stopwatch getLastRefresh();
-
-    /**
-     * The class type of the {@link JpaModel} associated with this repository.
+     * The class type of the {@link JpaModel} this repository holds.
      */
     @NotNull Class<T> getType();
 
     /**
-     * Executes a Hibernate criteria query against the cached data and returns
-     * the results wrapped in a {@link SingleStream}.
+     * The rows this repository holds, as one generation.
      *
-     * @return a {@link SingleStream} containing all cached entities of type {@code T}
-     * @throws JpaException if the query fails
+     * <p>The list is unmodifiable and is replaced whole rather than mutated, so a caller holding one
+     * keeps reading the generation it asked for.
+     *
+     * @return the held rows
+     * @throws JpaException if the last hydration failed and there is nothing to serve
      */
-    @Override
-    @NotNull SingleStream<T> stream() throws JpaException;
+    @NotNull ConcurrentList<T> getRows() throws JpaException;
 
     /**
-     * Calls {@link #stream()} and collects the results into an unmodifiable
-     * {@link ConcurrentList}.
+     * The point this repository's generation has reached in its hydration lifecycle.
+     */
+    @NotNull HydrationState getState();
+
+    /**
+     * When the held generation was published.
+     */
+    @NotNull Instant getHydratedAt();
+
+    /** {@inheritDoc} */
+    @Override
+    default @NotNull SingleStream<T> stream() throws JpaException {
+        return SingleStream.of(this.getRows().stream());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    default @NotNull IndexCache<T> indexes() {
+        return this.getRows().indexes();
+    }
+
+    /**
+     * Returns every row this repository holds.
      *
-     * @return an unmodifiable {@link ConcurrentList} of all cached entities
-     * @throws JpaException if the underlying stream query fails
+     * @return the held rows
+     * @throws JpaException if the last hydration failed and there is nothing to serve
      */
     default @NotNull ConcurrentList<T> findAll() throws JpaException {
-        return this.stream().collect(Concurrent.toUnmodifiableList());
+        return this.getRows();
     }
 
 }

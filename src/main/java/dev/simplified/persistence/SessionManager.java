@@ -3,50 +3,82 @@ package dev.simplified.persistence;
 import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.persistence.exception.JpaException;
+import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.source.WriteRequest;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.Optional;
 
 /**
  * Thread-safe registry of active {@link JpaSession} instances, providing the primary
  * entry points for session lifecycle management and cross-session repository lookup.
  *
- * <p>Sessions are created via {@link #connect(JpaConfig)}, which constructs and initializes
- * a {@link JpaSession}, caches its repositories, and adds it to the internal list.
- * Duplicate connections (same {@link JpaConfig#getUniqueId()}) are rejected.</p>
+ * <p>Sessions are created via {@link #connect(JpaConfig)}, which constructs a {@link JpaSession},
+ * hydrates every type it registers, and only then adds it to the internal list - so no lookup ever
+ * reaches a session that has not finished its first hydration, or one whose first hydration
+ * failed.</p>
  *
  * <p>Repository access via {@link #getRepository(Class)} searches all active sessions
  * in registration order, returning the first match. This allows multiple sessions
  * (e.g. separate H2 instances for different model sets) to coexist transparently.</p>
+ *
+ * <p>Shutting a manager down is optional: a JVM shutdown hook shuts every session it still holds
+ * down at exit. The hook is registered only while the manager holds a session - {@link #connect}
+ * registers it with the first, and a shutdown that leaves none removes it - so a manager shut down
+ * to empty is no longer reachable through the JVM, and can be connected again. JVM shutdown hooks
+ * run concurrently, so at exit a database's own hook can close it while a rebuild or tick of a
+ * session reading it is still running, and that rebuild or tick fails.</p>
  *
  * @see JpaSession
  * @see JpaConfig
  */
 public final class SessionManager {
 
+    /**
+     * The sessions this manager holds, in registration order. Its monitor guards the hook
+     * bookkeeping.
+     */
     private final @NotNull ConcurrentList<JpaSession> sessions = Concurrent.newList();
 
-    public SessionManager() {
-        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "session-manager-shutdown"));
-    }
+    /**
+     * JVM shutdown hook that shuts every held session down at exit, registered while this manager
+     * holds a session.
+     */
+    private final @NotNull Thread shutdownHook = new Thread(this::shutdown, "session-manager-shutdown");
 
     /**
-     * Creates a new {@link JpaSession} from the given configuration, registers it,
-     * and populates its repository cache.
+     * Creates a new {@link JpaSession} from the given configuration, hydrates it, and registers it.
      *
-     * <p>The session is fully initialized (Hibernate bootstrap complete) before
-     * {@link JpaSession#cacheRepositories()} is called. The returned session is
-     * immediately usable for queries.</p>
+     * <p>The returned session has hydrated every registered type and is immediately usable for
+     * queries. The first session a manager holds registers its JVM shutdown hook. When the first
+     * hydration fails the session is shut down and never registered; a database the caller opened
+     * for it stays open until the caller closes it or the JVM exits.</p>
      *
-     * @param config the configuration defining driver, repository factory, and connection settings
+     * @param config the registered models and the source they are read from
      * @return the newly created and fully initialized session
-     * @throws JpaException if a session with the same {@link JpaConfig#getUniqueId()} is already registered
+     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
+     *         associations, declares a collection-valued, element-collection or lazy association, or a
+     *         link or association naming no model it can resolve to, which is refused before anything
+     *         is read; or if a registered type fails to read or link
+     * @throws IllegalStateException if this manager holds no session and the JVM is already exiting
      */
     public @NotNull JpaSession connect(@NotNull JpaConfig config) {
-        if (this.isRegistered(config))
-            throw new JpaException("Session with the specified identifier is already active");
-
         JpaSession session = new JpaSession(config);
-        this.sessions.add(session);
-        session.cacheRepositories();
+
+        try {
+            session.cacheRepositories();
+
+            synchronized (this.sessions) {
+                if (this.sessions.isEmpty())
+                    Runtime.getRuntime().addShutdownHook(this.shutdownHook);
+
+                this.sessions.add(session);
+            }
+        } catch (RuntimeException exception) {
+            session.shutdown();
+            throw exception;
+        }
+
         return session;
     }
 
@@ -54,7 +86,9 @@ public final class SessionManager {
      * Shuts down and removes all managed sessions.
      *
      * <p>Each active session is {@linkplain JpaSession#shutdown() shut down} before the
-     * internal list is cleared. After this call, {@link #isActive()} returns {@code false}.</p>
+     * internal list is cleared, and the JVM shutdown hook is removed with the last of them. After
+     * this call, {@link #isActive()} returns {@code false}; the manager can be connected again.
+     * Shutting a session down never closes the database it reads.</p>
      */
     public void shutdown() {
         this.sessions.forEach(this::shutdown);
@@ -64,7 +98,9 @@ public final class SessionManager {
      * Shuts down and removes a single session from this manager.
      *
      * <p>If the session is still active, {@link JpaSession#shutdown()} is called before
-     * removal. The session object should be discarded after this call.</p>
+     * removal. Removing the last session this manager holds removes its JVM shutdown hook, unless
+     * the JVM is already exiting, in which case the hook is left to the JVM. The session object
+     * should be discarded after this call.</p>
      *
      * @param session the session to disconnect and remove
      */
@@ -72,48 +108,13 @@ public final class SessionManager {
         if (session.isActive())
             session.shutdown();
 
-        this.sessions.remove(session);
-    }
-
-    /**
-     * Shuts down and removes the session matching the given configuration's unique ID.
-     *
-     * <p>If no session matches, this method does nothing.</p>
-     *
-     * @param config the configuration identifying the session to disconnect
-     */
-    public void shutdown(@NotNull JpaConfig config) {
-        this.sessions.stream()
-            .filter(session -> session.getConfig().getUniqueId().equals(config.getUniqueId()))
-            .findFirst()
-            .ifPresent(this::shutdown);
-    }
-
-    /**
-     * Checks whether a session with the same {@link JpaConfig#getUniqueId()} is already
-     * managed by this registry.
-     *
-     * @param config the configuration to check
-     * @return {@code true} if a session with a matching unique ID exists
-     */
-    public boolean isRegistered(@NotNull JpaConfig config) {
-        return this.sessions.stream().anyMatch(session -> session.getConfig().getUniqueId().equals(config.getUniqueId()));
-    }
-
-    /**
-     * Tears down all current sessions and reconnects them from their stored configurations.
-     *
-     * <p>Captures each session's {@link JpaConfig}, calls {@link #shutdown()}, then
-     * re-invokes {@link #connect(JpaConfig)} for each config. Useful for resetting
-     * the in-memory state without rebuilding configuration objects.</p>
-     */
-    public void reconnect() {
-        ConcurrentList<JpaConfig> configs = this.sessions.stream()
-            .map(JpaSession::getConfig)
-            .collect(Concurrent.toList());
-
-        this.shutdown();
-        configs.forEach(this::connect);
+        synchronized (this.sessions) {
+            if (this.sessions.remove(session) && this.sessions.isEmpty()) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(this.shutdownHook);
+                } catch (IllegalStateException ignore) { }
+            }
+        }
     }
 
     /**
@@ -130,20 +131,42 @@ public final class SessionManager {
             throw new JpaException("There are no active sessions");
 
         for (JpaSession session : this.sessions) {
-            if (session.hasRepository(tClass))
-                return session.getRepository(tClass);
+            Optional<Repository<M>> repository = session.getRepository(tClass);
+
+            if (repository.isPresent())
+                return repository.get();
         }
 
         throw new JpaException("Repository cannot be retrieved");
     }
 
     /**
-     * Returns an unmodifiable snapshot of all currently managed sessions.
+     * Applies one write through the session that registers the type, and rebuilds that type and
+     * every type linking into it.
      *
-     * @return an unmodifiable copy of the session list
+     * <p>The symmetric member to {@link #getRepository(Class)}: a consumer that reaches a
+     * repository through this registry writes through it too, rather than having to hold on to
+     * whichever session it connected. A write goes to the session registering the request's exact
+     * type, and succeeds only where that session reads a {@link Source.Writable}.
+     *
+     * @param request the write to apply
+     * @param <M> the entity type
+     * @throws JpaException if no active session registers the type, its source holds no write
+     *         instruction, an upserted row's link that is neither a list nor an {@link Optional}
+     *         carries no id or names no row, or the write fails
      */
-    public @NotNull ConcurrentList<JpaSession> getSessions() {
-        return this.sessions.toUnmodifiable();
+    public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
+        if (!this.isActive())
+            throw new JpaException("There are no active sessions");
+
+        for (JpaSession session : this.sessions) {
+            if (session.getRepository(request.type()).filter(repository -> repository.getType() == request.type()).isPresent()) {
+                session.write(request);
+                return;
+            }
+        }
+
+        throw new JpaException("No session holds '%s' to write it", request.type().getName());
     }
 
     /**

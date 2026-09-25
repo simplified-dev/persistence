@@ -2,10 +2,11 @@ package dev.simplified.persistence.type;
 
 import com.google.gson.Gson;
 import dev.simplified.persistence.JpaModel;
-import dev.simplified.persistence.JpaSession;
+import dev.simplified.persistence.source.RelationalSource;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import jakarta.persistence.Convert;
+import jakarta.persistence.Transient;
 import org.hibernate.boot.Metadata;
 import org.hibernate.boot.MetadataBuilder;
 import org.hibernate.mapping.BasicValue;
@@ -28,9 +29,9 @@ import java.util.function.BiConsumer;
 /**
  * Pluggable registration interface for Hibernate custom types.
  * <p>
- * Implementations are discovered reflectively by {@link JpaSession} via classpath
- * scanning of this package - adding a new registrar requires no changes to
- * {@code JpaSession}.
+ * Implementations are discovered reflectively by {@link RelationalSource} via classpath
+ * scanning of this package when a database is opened - adding a new registrar requires no
+ * changes to it.
  * <p>
  * Lifecycle:
  * <ol>
@@ -43,9 +44,10 @@ import java.util.function.BiConsumer;
  * <p>
  * Hibernate 6+ resolves property types eagerly during {@code metadataBuilder.build()},
  * matching fields to registered types by class FQCN. Types with multiple parameterized
- * instances (e.g. {@link GsonListType}, {@link GsonOptionalType}) register a single
- * default instance under the raw class FQCN so every field gets a valid initial binding,
- * then upgrade individual fields to per-element-type instances in {@link #postProcess}.
+ * instances (e.g. a {@code List<E>} or an {@code Optional<I>} handled by
+ * {@link GsonValueType}) register a single default instance under the raw class FQCN so
+ * every field gets a valid initial binding, then upgrade individual fields to
+ * per-element-type instances in {@link #postProcess}.
  */
 public interface TypeRegistrar {
 
@@ -57,8 +59,8 @@ public interface TypeRegistrar {
     /**
      * Scans entity model fields to discover types that need custom Hibernate type registration.
      *
-     * @param gson the session's Gson instance for constructing type handlers
-     * @param models the topologically sorted entity classes to inspect
+     * @param gson the parser the database was opened with, for constructing type handlers
+     * @param models the types the database maps
      */
     void scan(@NotNull Gson gson, @NotNull Iterable<Class<JpaModel>> models);
 
@@ -85,7 +87,7 @@ public interface TypeRegistrar {
 
     /**
      * Returns {@code true} if the given field is a persistent Hibernate-mapped column
-     * (not static, not {@code transient}, not {@link jakarta.persistence.Transient @Transient}).
+     * (not static, not {@code transient}, not {@link Transient @Transient}).
      *
      * @param accessor the field to check
      * @return {@code true} if the field should be mapped by Hibernate
