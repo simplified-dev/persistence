@@ -1,6 +1,6 @@
 # Known open
 
-Open items on `feat/indexing` after the document/database unification. Each stays here until it is
+Open items after the document/database unification. Each stays here until it is
 closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
 ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
