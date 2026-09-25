@@ -403,7 +403,7 @@ public final class JpaSession {
         if (!this.config.models().contains(request.type()))
             throw new JpaException("Session holds no '%s' to write it", request.type().getName());
 
-        Class<JpaModel> type = (Class<JpaModel>) (Class<?>) request.type();
+        Class<JpaModel> type = (Class<JpaModel>) request.type();
 
         if (!(this.config.source() instanceof Source.Writable writable))
             throw new JpaException("Source for '%s' holds no write instruction", request.type().getName());
@@ -416,7 +416,7 @@ public final class JpaSession {
                 if (!this.active)
                     throw new JpaException("Session connection is not active");
 
-                ConcurrentList<JpaModel> rows = (ConcurrentList<JpaModel>) (ConcurrentList<?>) request.rows();
+                ConcurrentList<JpaModel> rows = (ConcurrentList<JpaModel>) request.rows();
 
                 this.repositories.get(type).link(rows, target -> {
                     ConcurrentMap<String, JpaModel> keyed = this.lookupFor(target, Concurrent.newMap());
