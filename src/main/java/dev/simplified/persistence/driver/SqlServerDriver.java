@@ -1,6 +1,8 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
 import dev.simplified.persistence.source.Connection;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
@@ -9,6 +11,7 @@ import org.jetbrains.annotations.NotNull;
  * A Microsoft SQL Server database, reached over the network and maintained elsewhere.
  */
 @Getter
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class SqlServerDriver implements JpaDriver {
 
     /**
@@ -19,8 +22,6 @@ public final class SqlServerDriver implements JpaDriver {
     private final @NotNull String dialectClass = "org.hibernate.dialect.SQLServerDialect";
     private final @NotNull String classPath = "com.microsoft.sqlserver.jdbc.SQLServerDriver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.EXTERNAL;
-
-    private SqlServerDriver() {}
 
     /**
      * Names a database on the default port.

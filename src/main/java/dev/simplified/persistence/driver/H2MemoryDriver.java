@@ -1,6 +1,8 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
 
@@ -11,13 +13,12 @@ import org.jetbrains.annotations.NotNull;
  * authenticate as, which is why {@link #named} takes one argument.
  */
 @Getter
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class H2MemoryDriver implements JpaDriver {
 
     private final @NotNull String dialectClass = "org.hibernate.dialect.H2Dialect";
     private final @NotNull String classPath = "org.h2.Driver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.CREATE_DROP;
-
-    private H2MemoryDriver() {}
 
     /**
      * Names an in-memory database.

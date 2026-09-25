@@ -1,6 +1,8 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
 import dev.simplified.persistence.source.Connection;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
@@ -11,6 +13,7 @@ import org.jetbrains.annotations.NotNull;
  * <p>The server maintains the schema, so nothing is created or dropped from here.
  */
 @Getter
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class H2TcpDriver implements JpaDriver {
 
     /**
@@ -21,8 +24,6 @@ public final class H2TcpDriver implements JpaDriver {
     private final @NotNull String dialectClass = "org.hibernate.dialect.H2Dialect";
     private final @NotNull String classPath = "org.h2.Driver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.EXTERNAL;
-
-    private H2TcpDriver() {}
 
     /**
      * Names a database on the default port.

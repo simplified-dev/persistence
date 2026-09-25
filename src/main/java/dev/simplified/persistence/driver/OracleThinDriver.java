@@ -1,6 +1,8 @@
 package dev.simplified.persistence.driver;
 
+import dev.simplified.annotations.AccessLevel;
 import dev.simplified.annotations.Getter;
+import dev.simplified.annotations.NoArgsConstructor;
 import dev.simplified.persistence.source.Connection;
 import dev.simplified.persistence.source.RelationalSource;
 import org.jetbrains.annotations.NotNull;
@@ -9,6 +11,7 @@ import org.jetbrains.annotations.NotNull;
  * An Oracle database reached through the Thin JDBC driver, maintained elsewhere.
  */
 @Getter
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class OracleThinDriver implements JpaDriver {
 
     /**
@@ -19,8 +22,6 @@ public final class OracleThinDriver implements JpaDriver {
     private final @NotNull String dialectClass = "org.hibernate.dialect.OracleDialect";
     private final @NotNull String classPath = "oracle.jdbc.driver.OracleDriver";
     private final @NotNull SchemaPolicy schemaPolicy = SchemaPolicy.EXTERNAL;
-
-    private OracleThinDriver() {}
 
     /**
      * Names a service on the default port.
