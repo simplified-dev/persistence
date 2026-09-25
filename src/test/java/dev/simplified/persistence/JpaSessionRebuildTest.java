@@ -14,6 +14,8 @@ import dev.simplified.persistence.optional.LinkedStray;
 import dev.simplified.persistence.sibling.LinkedSibling;
 import dev.simplified.persistence.source.Source;
 import dev.simplified.persistence.source.WriteRequest;
+import dev.simplified.persistence.subtype.SubtypeLinker;
+import dev.simplified.persistence.subtype.SubtypeRow;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,7 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * How a session rebuilds a generation: nothing is published before its links resolve, a write
- * rebuilds every type linking into the written one, a landed write whose rebuild fails returns having
+ * rebuilds every type linking into the written one, through a link declaring a supertype of it as
+ * well, a landed write whose rebuild fails returns having
  * published nothing and says so on every covered type, a write the origin refuses throws and rebuilds
  * nothing, rebuilds run one at a time, and a write that names no rows rebuilds nothing.
  *
@@ -376,6 +379,30 @@ class JpaSessionRebuildTest {
     }
 
     @Test
+    @DisplayName("a link declared as a supertype resolves to the registered subtype, and a write to that subtype rebuilds the linking type")
+    void aLinkToASupertypeFollowsItsRegisteredSubtype() {
+        SubtypeCorpus corpus = new SubtypeCorpus();
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(models(SubtypeLinker.class, SubtypeRow.class), corpus));
+            SubtypeRow row = session.getRepository(SubtypeRow.class).orElseThrow().getRows().getFirst();
+            SubtypeLinker linker = session.getRepository(SubtypeLinker.class).orElseThrow().getRows().getFirst();
+            assertThat(linker.getRow(), sameInstance(row));
+
+            session.write(WriteRequest.upsert(SubtypeRow.class, List.of(SubtypeCorpus.row("r1", "renamed"))));
+
+            SubtypeRow heldRow = session.getRepository(SubtypeRow.class).orElseThrow().getRows().getFirst();
+            SubtypeLinker heldLinker = session.getRepository(SubtypeLinker.class).orElseThrow().getRows().getFirst();
+            assertThat(heldRow.getName(), equalTo("renamed"));
+            assertThat(heldLinker.getRow(), sameInstance(heldRow));
+            assertThat(corpus.linkerReads.get(), equalTo(2));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
     @DisplayName("two new rows of different types naming each other through plain links are refused, whichever is written first")
     void aNewCycleAcrossTypesIsRefused() {
         CycleCorpus corpus = new CycleCorpus();
@@ -509,6 +536,61 @@ class JpaSessionRebuildTest {
         @Override
         public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
             this.writes.incrementAndGet();
+        }
+
+    }
+
+    /**
+     * A writable source over {@link SubtypeRow} names and one {@link SubtypeLinker} naming the row
+     * {@code r1}, answering fresh instances on every read and counting the linker's reads.
+     */
+    private static final class SubtypeCorpus implements Source.Writable {
+
+        private final @NotNull ConcurrentMap<String, String> names = Concurrent.newLinkedMap();
+        private final @NotNull AtomicInteger linkerReads = new AtomicInteger();
+
+        private SubtypeCorpus() {
+            this.names.put("r1", "one");
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T extends JpaModel> @NotNull ConcurrentList<T> read(@NotNull Class<T> type) {
+            ConcurrentList<JpaModel> rows = Concurrent.newList();
+
+            if (type == SubtypeRow.class)
+                this.names.forEach((id, name) -> rows.add(row(id, name)));
+            else {
+                this.linkerReads.incrementAndGet();
+                SubtypeLinker linker = new SubtypeLinker();
+                linker.setId("l1");
+                linker.setRowId("r1");
+                rows.add(linker);
+            }
+
+            return (ConcurrentList<T>) rows;
+        }
+
+        @Override
+        public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) {
+            request.rows().forEach(row -> {
+                if (row instanceof SubtypeRow written)
+                    this.names.put(written.getId(), written.getName());
+            });
+        }
+
+        /**
+         * Builds a subtype row.
+         *
+         * @param id the row's id
+         * @param name the row's name
+         * @return the row
+         */
+        private static @NotNull SubtypeRow row(@NotNull String id, @NotNull String name) {
+            SubtypeRow row = new SubtypeRow();
+            row.setId(id);
+            row.setName(name);
+            return row;
         }
 
     }
