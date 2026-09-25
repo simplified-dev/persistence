@@ -1,6 +1,6 @@
 [versions]
 annotations = "26.0.2"
-simplified-annotations = "2.6.1"
+simplified-annotations = "2.7.0"
 junit-jupiter = "5.11.4"
 hamcrest = "2.2"
 log4j2 = "2.25.3"
