@@ -385,16 +385,21 @@ public final class JpaSession {
      * or a {@link Hydration} tick covers it, which {@link Repository#getState()} reports. An
      * {@link Error} from the rebuild is not caught.
      *
-     * <p>An upsert is checked before it is written. Its rows are linked against the rows this session
-     * holds, with the request's own rows keyed over the written type's, so a row linking to one the
-     * same request adds resolves. A row whose link is neither a list nor an {@link Optional} and
-     * carries no id or names no row refuses the whole write before anything reaches the source. The
-     * check fills in the request rows' {@link Linked} fields, which serialization skips. A request
-     * writes one type and every other type answers its held rows, so two new rows of different types
-     * naming each other through plain links cannot be written - whichever goes first names a row
-     * nothing holds yet - and one side has to link through an {@link Optional}, or first name a row
-     * that is already held. A delete is not checked: removing a row that other rows still name lands,
-     * then fails its own rebuild and every later connect until the data is repaired.
+     * <p>A write is checked before it is written, against the rows this session holds, by the check
+     * {@link JpaConfig#write(WriteRequest)} runs against its source. Only a {@link Linked} field that
+     * is neither a list nor an {@link Optional} has no way to hold a miss, so only such a link is
+     * read. An upsert is refused whole when one of its rows' such links carries no id or names no
+     * row, the request's own rows counting as rows of the written type, so a row linking to one the
+     * same request adds resolves. A request writes one type and every other type answers its held
+     * rows, so two new rows of different types naming each other through such links cannot be
+     * written - whichever goes first names a row nothing holds yet - and one side has to link through
+     * an {@link Optional}, or first name a row that is already held. A delete is refused whole when a
+     * held row it leaves names one of the deleted rows through such a link, so rows naming only each
+     * other can be deleted together when they are of the written type; two rows of different types
+     * naming each other through such links cannot be deleted, since whichever goes first is still
+     * named by the other. Either refusal comes before anything reaches the source. The check reads
+     * nothing from the source, so a row another writer commits after this session's last rebuild is
+     * not seen, and neither is a write through this session running at the same time.
      *
      * <p>The request names the exact type it writes. A subtype registered in its place is not written
      * through a supertype, because the rows would reach the source under one type and be rebuilt under
@@ -404,7 +409,8 @@ public final class JpaSession {
      * @param <M> the entity type
      * @throws JpaException if the session is inactive, the type is not registered exactly, the source
      *         holds no write instruction, an upserted row's link that is neither a list nor an
-     *         {@link Optional} carries no id or names no row, or the write fails
+     *         {@link Optional} carries no id or names no row, a held row the delete leaves names a
+     *         deleted row through such a link, or the write fails
      */
     @SuppressWarnings("unchecked")
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
@@ -422,22 +428,11 @@ public final class JpaSession {
         if (request.rows().isEmpty())
             return;
 
-        if (request.operation() == WriteRequest.Operation.UPSERT) {
-            synchronized (this) {
-                if (!this.active)
-                    throw new JpaException("Session connection is not active");
+        synchronized (this) {
+            if (!this.active)
+                throw new JpaException("Session connection is not active");
 
-                ConcurrentList<JpaModel> rows = (ConcurrentList<JpaModel>) request.rows();
-
-                this.repositories.get(type).link(rows, target -> {
-                    ConcurrentMap<String, JpaModel> keyed = this.lookupFor(target, Concurrent.newMap());
-
-                    if (registered(this.config.models(), target).filter(type::equals).isPresent())
-                        keyed.putAll(JpaModel.keyed(type, rows));
-
-                    return keyed;
-                });
-            }
+            JpaRepository.refuseDangling(this.config.models(), request, model -> this.repositories.get(model).getRows());
         }
 
         writable.write(request);
@@ -614,7 +609,7 @@ public final class JpaSession {
      * @return the registered type, empty when none answers
      */
     @SuppressWarnings("unchecked")
-    private static @NotNull Optional<Class<JpaModel>> registered(
+    static @NotNull Optional<Class<JpaModel>> registered(
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Class<?> type
     ) {

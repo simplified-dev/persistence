@@ -9,6 +9,7 @@ import dev.simplified.collection.query.Sortable;
 import dev.simplified.gson.PostInit;
 import dev.simplified.persistence.exception.JpaException;
 import dev.simplified.persistence.source.Source;
+import dev.simplified.persistence.source.WriteRequest;
 import dev.simplified.reflection.Reflection;
 import dev.simplified.reflection.accessor.FieldAccessor;
 import org.jetbrains.annotations.NotNull;
@@ -22,7 +23,9 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Default {@link Repository} implementation, holding one generation of rows.
@@ -298,6 +301,124 @@ public class JpaRepository<T extends JpaModel> implements Repository<T> {
                 throw new JpaException("Field '%s' of '%s' names '%s', which no row carries", field.getName(), this.type.getName(), held);
             else
                 field.set(entity, match);
+        }
+    }
+
+    /**
+     * Refuses a write that would leave a plain link naming no row, before anything reaches the
+     * source.
+     *
+     * <p>A plain link is a {@link Linked} field that is neither a list nor an {@link Optional}, the
+     * one shape with no way to hold a miss, so it is the only one read here. An upsert is refused
+     * when one of its rows' plain links carries no id, names a key no row of the registered type
+     * answering for its target carries, or targets a class no registered type answers for. Where
+     * that type is the written one, the request's own rows count, so a row may name another the same
+     * request adds. A delete is refused when a row of a registered type, the written one included,
+     * names a deleted key through a plain link whose target resolves to the written type, unless that
+     * row is deleted with it. Either refusal is of the whole write.
+     *
+     * <p>A type's rows are asked for only when a plain link needs them, and at most once per call:
+     * an upsert asks for the target of each of the written type's plain links, and only for a key the
+     * request's own rows do not carry, and a delete asks for each type declaring a plain link into the
+     * written one.
+     *
+     * @param models the registered types, in registration order
+     * @param request the write to check, whose type is registered exactly
+     * @param rowsOf answers a registered type's rows
+     * @throws JpaException if an upserted row's plain link carries no id, names no row or targets a
+     *         class no registered type answers for, or a row the delete leaves names a deleted row
+     *         through a plain link
+     */
+    @SuppressWarnings("unchecked")
+    static void refuseDangling(
+        @NotNull ConcurrentList<Class<JpaModel>> models,
+        @NotNull WriteRequest<? extends JpaModel> request,
+        @NotNull Function<Class<JpaModel>, ConcurrentList<JpaModel>> rowsOf
+    ) {
+        Class<JpaModel> type = (Class<JpaModel>) request.type();
+        ConcurrentList<JpaModel> rows = (ConcurrentList<JpaModel>) request.rows();
+        Predicate<FieldAccessor<?>> plain = field -> field.getFieldType() != Optional.class
+            && !Collection.class.isAssignableFrom(field.getFieldType());
+
+        if (rows.isEmpty())
+            return;
+
+        if (request.operation() == WriteRequest.Operation.UPSERT) {
+            ConcurrentMap<FieldAccessor<?>, Class<JpaModel>> targets = Concurrent.newMap();
+
+            for (FieldAccessor<?> field : links(type)) {
+                if (!plain.test(field))
+                    continue;
+
+                Class<? extends JpaModel> target = targetOf(field);
+
+                targets.put(field, JpaSession.registered(models, target).orElseThrow(() -> new JpaException(
+                    "Field '%s' of '%s' links into '%s', which no registered type answers for",
+                    field.getName(),
+                    type.getName(),
+                    target.getName()
+                )));
+            }
+
+            Reflection<?> reflection = new Reflection<>(type);
+            ConcurrentMap<String, JpaModel> own = targets.containsValue(type) ? JpaModel.keyed(type, rows) : Concurrent.newMap();
+            ConcurrentMap<Class<JpaModel>, ConcurrentMap<String, JpaModel>> keyed = Concurrent.newMap();
+
+            for (JpaModel row : rows) {
+                for (Map.Entry<FieldAccessor<?>, Class<JpaModel>> link : targets) {
+                    FieldAccessor<?> field = link.getKey();
+                    Object held = unwrapped(reflection.getField(idPropertyOf(field)).get(row));
+
+                    if (held == null)
+                        throw new JpaException("Field '%s' of '%s' carries no id", field.getName(), type.getName());
+
+                    String key = String.valueOf(held);
+
+                    if (link.getValue() == type && own.containsKey(key))
+                        continue;
+
+                    if (!keyed.computeIfAbsent(link.getValue(), target -> JpaModel.keyed(target, rowsOf.apply(target))).containsKey(key))
+                        throw new JpaException("Field '%s' of '%s' names '%s', which no row carries", field.getName(), type.getName(), held);
+                }
+            }
+
+            return;
+        }
+
+        ConcurrentMap<Class<JpaModel>, ConcurrentList<FieldAccessor<?>>> naming = Concurrent.newLinkedMap();
+
+        for (Class<JpaModel> model : models) {
+            ConcurrentList<FieldAccessor<?>> fields = links(model)
+                .stream()
+                .filter(plain)
+                .filter(field -> JpaSession.registered(models, targetOf(field)).filter(type::equals).isPresent())
+                .collect(Concurrent.toList());
+
+            if (!fields.isEmpty())
+                naming.put(model, fields);
+        }
+
+        if (naming.isEmpty())
+            return;
+
+        FieldAccessor<?> id = JpaModel.keyOf(type);
+        Set<String> deleted = JpaModel.keyed(type, rows).keySet();
+
+        for (Map.Entry<Class<JpaModel>, ConcurrentList<FieldAccessor<?>>> dependent : naming) {
+            Class<JpaModel> model = dependent.getKey();
+            Reflection<?> reflection = new Reflection<>(model);
+
+            for (JpaModel row : rowsOf.apply(model)) {
+                if (model == type && deleted.contains(String.valueOf(id.get(row))))
+                    continue;
+
+                for (FieldAccessor<?> field : dependent.getValue()) {
+                    Object held = unwrapped(reflection.getField(idPropertyOf(field)).get(row));
+
+                    if (held != null && deleted.contains(String.valueOf(held)))
+                        throw new JpaException("Field '%s' of '%s' names '%s', which the write deletes", field.getName(), model.getName(), held);
+                }
+            }
         }
     }
 

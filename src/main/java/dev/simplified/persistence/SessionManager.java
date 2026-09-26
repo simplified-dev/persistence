@@ -154,7 +154,8 @@ public final class SessionManager {
      * @param <M> the entity type
      * @throws JpaException if no active session registers the type, its source holds no write
      *         instruction, an upserted row's link that is neither a list nor an {@link Optional}
-     *         carries no id or names no row, or the write fails
+     *         carries no id or names no row, a held row the delete leaves names a deleted row through
+     *         such a link, or the write fails
      */
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
         if (!this.isActive())

@@ -4,6 +4,7 @@ import dev.simplified.collection.Concurrent;
 import dev.simplified.collection.ConcurrentList;
 import dev.simplified.collection.ConcurrentMap;
 import dev.simplified.persistence.Hydration;
+import dev.simplified.persistence.JpaConfig;
 import dev.simplified.persistence.JpaModel;
 import dev.simplified.persistence.JpaSession;
 import dev.simplified.persistence.exception.JpaException;
@@ -75,6 +76,9 @@ public interface Source {
          * <p>A write here reaches the origin and nothing else. A session holding the type keeps
          * serving the rows it read, so a registered type is written through
          * {@link JpaSession#write(WriteRequest)}, which rebuilds it and every type linking into it.
+         * Nothing here checks the write's links either: {@link JpaSession#write(WriteRequest)}, and
+         * {@link JpaConfig#write(WriteRequest)} as the checked entry for a caller holding no session,
+         * refuse a write that would leave a link naming no row before they call this one.
          *
          * @param request the write to apply
          * @param <T> the entity type

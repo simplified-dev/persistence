@@ -4,14 +4,14 @@ Open items after the document/database unification. Each stays here until it is
 closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
 ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
-> #### A queued corpus write skips the session's link check
-> `JpaSession.write` checks an upsert against the rows the session holds before anything reaches the
-> source, and refuses the whole write when a row's plain single-valued `@Linked` field carries no id
-> or names no row; a list or `Optional` link tolerates a miss. It checks no delete. data's
-> `WriteQueueConsumer`, the one production caller of `SkyBlockData.writing(...)`, holds no session
-> and writes through that source, so its upserts reach GitHub unchecked, and a delete of a row other
-> rows still name is checked on no path. Each layer such a write changes lands as a commit, which the
-> consumer counts as a success.
+> #### A queued corpus write skips the link check
+> `JpaSession.write`, against the rows the session holds, and `JpaConfig.write`, against the rows its
+> source answers, refuse the whole write before anything reaches the source when an upserted row's
+> plain single-valued `@Linked` field carries no id or names no row, or when a deleted row is still
+> named through such a field; a list or `Optional` link tolerates a miss. data's
+> `WriteQueueConsumer`, the one production caller of `SkyBlockData.writing(...)`, calls neither: it
+> writes straight through the source that method returns, so its writes reach GitHub unchecked.
+> Each layer such a write changes lands as a commit, which the consumer counts as a success.
 >
 > A process whose first `SkyBlockData.connect()` comes after that commit fails to connect,
 > corpus-wide, since a connect reads every layer at the branch tip. A running session reads the
@@ -25,8 +25,7 @@ ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/co
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
 >   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:152` -
->   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
+>   `writing`; `src/main/java/dev/simplified/persistence/JpaConfig.java:79` - `write`
 > - Type: **GAP**
 > - Status: **OPEN**
 
