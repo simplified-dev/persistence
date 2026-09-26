@@ -39,21 +39,29 @@ import java.util.stream.Stream;
  *
  * <p>A rebuild covers the types asked for and every registered type that links into one of them,
  * directly or through other types, whether by {@link Linked} or by a single-valued JPA association.
- * An association links into every registered type it reaches, through as many unregistered types as
- * it passes on the way, because every row along it is read with its owner. Once the rebuild
- * completes, a {@link Linked} field holds the instance its target's repository holds, and an
- * association holds a copy read with its owner that carries the target's current row. Publication
- * is per type, so a reader between two types' publication sees one new generation and one old.
+ * An association declared on a field links into the registered type answering for the class the
+ * field declares, and on through as many unregistered types as it passes, because every row along
+ * it is read with its owner. Once the rebuild completes, a {@link Linked} field holds the instance
+ * its target's repository holds, and such an association holds a copy read with its owner that
+ * carries the target's current row. Publication is per type, so a reader between two types'
+ * publication sees one new generation and one old.
  *
- * <p>A registered type declaring a collection-valued association or an element collection -
+ * <p>A field declaring a collection-valued association or an element collection -
  * {@link OneToMany}, {@link ManyToMany}, {@link ElementCollection} - or a lazy single-valued
  * association is refused at connect, before anything is read. Read from a database, a lazy field
  * fails once the read that loaded its owner has closed, and a rebuild does not follow a collection,
- * so none of them can be served from a held generation. Such a type belongs outside the registered
- * models, reached through the database that maps it. An eager single-valued association reads its
- * target with its owner whether or not the target is registered, so the check follows every one of
- * them out of a registered type, through as many unregistered types as they lead to, and refuses
- * the same fields on each type it reaches, naming the path from the registered type.
+ * so none of them can be served from a held generation. A type declaring one belongs outside the
+ * registered models, reached through the database that maps it. An eager single-valued association
+ * reads its target with its owner whether or not the target is registered, so the check follows
+ * each field declaring one out of a registered type, through as many unregistered types as it
+ * leads to, and refuses the same fields on each type it reaches, naming the path from the registered
+ * type.
+ *
+ * <p>The check reads the fields a type and its superclasses declare, and the class each association
+ * field declares. A mapping carried on a getter, inside an embedded component, through Hibernate's
+ * {@code @Any} or {@code @ManyToAny}, or on a mapped subclass is not read, so it is neither refused
+ * nor followed and draws no edge. An association declaring a supertype of several registered types
+ * draws its edge to the first of them registered.
  *
  * <p>The session records the fingerprint its source answered for each type before the read that
  * produced the held generation. A {@link Hydration} tick asks again and reads only the due types
@@ -120,9 +128,10 @@ public final class JpaSession {
      * Constructs a session over the given configuration, performing no I/O.
      *
      * @param config the registered models and the source they are read from
-     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
-     *         associations, declares a collection-valued, element-collection or lazy association, or a
-     *         link or association naming no model it can resolve to
+     * @throws JpaException if a field of a registered type, or of a type one reaches through fields
+     *         declaring eager single-valued associations, declares a collection-valued,
+     *         element-collection or lazy association, or a link or association naming no model it can
+     *         resolve to
      */
     JpaSession(@NotNull JpaConfig config) {
         this.config = config;
@@ -510,9 +519,10 @@ public final class JpaSession {
      * @param models the registered types
      * @return the links, with an edge from each registered type to every registered type it links
      *         into
-     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
-     *         associations, declares a collection-valued, element-collection or lazy association, or a
-     *         link or association naming no model it can resolve to
+     * @throws JpaException if a field of a registered type, or of a type one reaches through fields
+     *         declaring eager single-valued associations, declares a collection-valued,
+     *         element-collection or lazy association, or a link or association naming no model it can
+     *         resolve to
      */
     private static @NotNull Graph<Class<JpaModel>> linksOf(@NotNull ConcurrentList<Class<JpaModel>> models) {
         return Graph.<Class<JpaModel>>builder()
