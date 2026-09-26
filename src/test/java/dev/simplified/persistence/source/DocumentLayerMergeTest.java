@@ -20,11 +20,14 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Covers what a second document layer does to the first, and what a write does to both.
+ * Covers what a second document layer does to the first, what a write does to both, and what a
+ * document source refuses to be built without.
  *
  * <p>The corpus this design reads exercises only addition - the one companion file that exists holds
  * two rows and neither is in the file it accompanies - so a merge that silently stopped overriding
@@ -35,14 +38,14 @@ class DocumentLayerMergeTest {
     private static final @NotNull Gson GSON = GsonSettings.defaults().create();
 
     /**
-     * A document origin over a map, so a case names its layers as bodies and nothing parses a
+     * A tree of document layers over a map, so a case names its layers as bodies and nothing parses a
      * catalogue to set one up.
      *
      * <p>A body a case puts in {@code landing} is a commit someone else makes after the source read
-     * the layer: it replaces the layer at the next edit of that path, before the origin reads the
-     * text the edit applies to.
+     * the layer: it replaces the layer at the next edit of that path, before the tree reads the text
+     * the edit applies to.
      */
-    private static final class Layers implements DocumentOrigin.Writable {
+    private static final class Layers {
 
         private final @NotNull ConcurrentMap<String, String> bodies = Concurrent.newLinkedMap();
         private final @NotNull ConcurrentMap<String, String> landing = Concurrent.newMap();
@@ -53,21 +56,18 @@ class DocumentLayerMergeTest {
                 this.bodies.put("layer-" + index + ".json", bodies[index]);
         }
 
-        @Override
-        public @NotNull ConcurrentList<String> layersOf(@NotNull String name) {
+        private @NotNull ConcurrentList<String> layersOf(@NotNull String name) {
             return name.equals("layered")
                 ? Concurrent.newUnmodifiableList(this.bodies.keySet())
                 : Concurrent.newUnmodifiableList();
         }
 
-        @Override
-        public @NotNull String read(@NotNull String path) {
+        private @NotNull String read(@NotNull String path) {
             return Optional.ofNullable(this.bodies.get(path))
                 .orElseThrow(() -> new JpaException("No layer at '%s'", path));
         }
 
-        @Override
-        public void edit(@NotNull String path, @NotNull UnaryOperator<String> change) {
+        private void edit(@NotNull String path, @NotNull UnaryOperator<String> change) {
             String landed = this.landing.remove(path);
 
             if (landed != null)
@@ -80,7 +80,22 @@ class DocumentLayerMergeTest {
     }
 
     private static @NotNull Source of(@NotNull String @NotNull ... bodies) {
-        return new DocumentSource(new Layers(bodies), GSON);
+        Layers layers = new Layers(bodies);
+
+        return DocumentSource.ReadOnly.builder()
+            .withLayers(layers::layersOf)
+            .withText(layers::read)
+            .withGson(GSON)
+            .build();
+    }
+
+    private static @NotNull Source.Writable readWrite(@NotNull Layers origin) {
+        return DocumentSource.ReadWrite.builder()
+            .withLayers(origin::layersOf)
+            .withText(origin::read)
+            .withEdit(origin::edit)
+            .withGson(GSON)
+            .build();
     }
 
     @Test
@@ -160,7 +175,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("C", "c"))));
 
@@ -180,7 +195,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
             "[{\"id\":\"B\",\"name\":\"b1\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("B", "b2"))));
 
@@ -203,7 +218,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
             "[{\"id\":\"B\",\"name\":\"b1\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.delete(LayeredRow.class, List.of(row("B", "b1"))));
 
@@ -220,7 +235,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
             "[{\"id\":\"C\",\"name\":\"c\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "a2"))));
 
@@ -241,7 +256,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "a2"), row("B", "b2"), row("C", "c"))));
 
@@ -261,7 +276,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.delete(LayeredRow.class, List.of(row("Z", "z"))));
 
@@ -272,7 +287,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a written row replaces the one already under its key rather than joining it")
     void writeOverridesByKey() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]");
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("A", "rewritten"))));
 
@@ -289,7 +304,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]",
             "[{\"id\":\"C\",\"name\":\"c\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.delete(LayeredRow.class, List.of(row("B", "b"))));
 
@@ -300,7 +315,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a write naming no rows does not reach the origin at all")
     void emptyWriteIsSilence() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of()));
 
@@ -315,7 +330,7 @@ class DocumentLayerMergeTest {
             "[{\"id\":\"A\",\"name\":\"a\"}]",
             "[{\"id\":\"B\",\"name\":\"b\"}]"
         );
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
         origin.landing.put("layer-1.json", "[{\"id\":\"B\",\"name\":\"b\"},{\"id\":\"D\",\"name\":\"d\"}]");
 
         source.write(WriteRequest.upsert(LayeredRow.class, List.of(row("C", "c"))));
@@ -332,7 +347,7 @@ class DocumentLayerMergeTest {
     @DisplayName("a delete removes only the keys it names from the layer as the origin holds it when it writes")
     void deleteAppliesToTheLayerTheOriginHolds() {
         Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"},{\"id\":\"B\",\"name\":\"b\"}]");
-        Source.Writable source = new DocumentSource.Writable(origin, GSON);
+        Source.Writable source = readWrite(origin);
         origin.landing.put(
             "layer-0.json",
             "[{\"id\":\"A\",\"name\":\"a2\"},{\"id\":\"B\",\"name\":\"b\"},{\"id\":\"D\",\"name\":\"d\"}]"
@@ -344,6 +359,30 @@ class DocumentLayerMergeTest {
 
         assertThat(rows.stream().map(LayeredRow::getId).toList(), contains("A", "D"));
         assertThat(rows.getFirst().getName(), equalTo("a2"));
+    }
+
+    @Test
+    @DisplayName("a read-only source is no Source.Writable, and a source missing its layers, text, parser or write instruction is refused")
+    void anIncompleteSourceIsRefused() {
+        Layers origin = new Layers("[{\"id\":\"A\",\"name\":\"a\"}]");
+
+        assertThat(of("[]"), not(instanceOf(Source.Writable.class)));
+        assertThat(
+            assertThrows(JpaException.class, () -> DocumentSource.ReadOnly.builder().withText(origin::read).withGson(GSON).build()).getMessage(),
+            equalTo("A document source names no layers")
+        );
+        assertThat(
+            assertThrows(JpaException.class, () -> DocumentSource.ReadOnly.builder().withLayers(origin::layersOf).withGson(GSON).build()).getMessage(),
+            equalTo("A document source reads no text")
+        );
+        assertThat(
+            assertThrows(JpaException.class, () -> DocumentSource.ReadOnly.builder().withLayers(origin::layersOf).withText(origin::read).build()).getMessage(),
+            equalTo("A document source names no parser")
+        );
+        assertThat(
+            assertThrows(JpaException.class, () -> DocumentSource.ReadWrite.builder().withLayers(origin::layersOf).withText(origin::read).withGson(GSON).build()).getMessage(),
+            equalTo("A writable document source holds no write instruction")
+        );
     }
 
     private static @NotNull List<String> idsIn(@NotNull Layers origin, @NotNull String path) {

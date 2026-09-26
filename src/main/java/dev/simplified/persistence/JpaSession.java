@@ -39,21 +39,29 @@ import java.util.stream.Stream;
  *
  * <p>A rebuild covers the types asked for and every registered type that links into one of them,
  * directly or through other types, whether by {@link Linked} or by a single-valued JPA association.
- * An association links into every registered type it reaches, through as many unregistered types as
- * it passes on the way, because every row along it is read with its owner. Once the rebuild
- * completes, a {@link Linked} field holds the instance its target's repository holds, and an
- * association holds a copy read with its owner that carries the target's current row. Publication
- * is per type, so a reader between two types' publication sees one new generation and one old.
+ * An association declared on a field links into the registered type answering for the class the
+ * field declares, and on through as many unregistered types as it passes, because every row along
+ * it is read with its owner. Once the rebuild completes, a {@link Linked} field holds the instance
+ * its target's repository holds, and such an association holds a copy read with its owner that
+ * carries the target's current row. Publication is per type, so a reader between two types'
+ * publication sees one new generation and one old.
  *
- * <p>A registered type declaring a collection-valued association or an element collection -
+ * <p>A field declaring a collection-valued association or an element collection -
  * {@link OneToMany}, {@link ManyToMany}, {@link ElementCollection} - or a lazy single-valued
  * association is refused at connect, before anything is read. Read from a database, a lazy field
  * fails once the read that loaded its owner has closed, and a rebuild does not follow a collection,
- * so none of them can be served from a held generation. Such a type belongs outside the registered
- * models, reached through the database that maps it. An eager single-valued association reads its
- * target with its owner whether or not the target is registered, so the check follows every one of
- * them out of a registered type, through as many unregistered types as they lead to, and refuses
- * the same fields on each type it reaches, naming the path from the registered type.
+ * so none of them can be served from a held generation. A type declaring one belongs outside the
+ * registered models, reached through the database that maps it. An eager single-valued association
+ * reads its target with its owner whether or not the target is registered, so the check follows
+ * each field declaring one out of a registered type, through as many unregistered types as it
+ * leads to, and refuses the same fields on each type it reaches, naming the path from the registered
+ * type.
+ *
+ * <p>The check reads the fields a type and its superclasses declare, and the class each association
+ * field declares. A mapping carried on a getter, inside an embedded component, through Hibernate's
+ * {@code @Any} or {@code @ManyToAny}, or on a mapped subclass is not read, so it is neither refused
+ * nor followed and draws no edge. An association declaring a supertype of several registered types
+ * draws its edge to the first of them registered.
  *
  * <p>The session records the fingerprint its source answered for each type before the read that
  * produced the held generation. A {@link Hydration} tick asks again and reads only the due types
@@ -120,9 +128,10 @@ public final class JpaSession {
      * Constructs a session over the given configuration, performing no I/O.
      *
      * @param config the registered models and the source they are read from
-     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
-     *         associations, declares a collection-valued, element-collection or lazy association, or a
-     *         link or association naming no model it can resolve to
+     * @throws JpaException if a field of a registered type, or of a type one reaches through fields
+     *         declaring eager single-valued associations, declares a collection-valued,
+     *         element-collection or lazy association, or a link or association naming no model it can
+     *         resolve to
      */
     JpaSession(@NotNull JpaConfig config) {
         this.config = config;
@@ -376,16 +385,21 @@ public final class JpaSession {
      * or a {@link Hydration} tick covers it, which {@link Repository#getState()} reports. An
      * {@link Error} from the rebuild is not caught.
      *
-     * <p>An upsert is checked before it is written. Its rows are linked against the rows this session
-     * holds, with the request's own rows keyed over the written type's, so a row linking to one the
-     * same request adds resolves. A row whose link is neither a list nor an {@link Optional} and
-     * carries no id or names no row refuses the whole write before anything reaches the source. The
-     * check fills in the request rows' {@link Linked} fields, which serialization skips. A request
-     * writes one type and every other type answers its held rows, so two new rows of different types
-     * naming each other through plain links cannot be written - whichever goes first names a row
-     * nothing holds yet - and one side has to link through an {@link Optional}, or first name a row
-     * that is already held. A delete is not checked: removing a row that other rows still name lands,
-     * then fails its own rebuild and every later connect until the data is repaired.
+     * <p>A write is checked before it is written, against the rows this session holds, by the check
+     * {@link JpaConfig#write(WriteRequest)} runs against its source. Only a {@link Linked} field that
+     * is neither a list nor an {@link Optional} has no way to hold a miss, so only such a link is
+     * read. An upsert is refused whole when one of its rows' such links carries no id or names no
+     * row, the request's own rows counting as rows of the written type, so a row linking to one the
+     * same request adds resolves. A request writes one type and every other type answers its held
+     * rows, so two new rows of different types naming each other through such links cannot be
+     * written - whichever goes first names a row nothing holds yet - and one side has to link through
+     * an {@link Optional}, or first name a row that is already held. A delete is refused whole when a
+     * held row it leaves names one of the deleted rows through such a link, so rows naming only each
+     * other can be deleted together when they are of the written type; two rows of different types
+     * naming each other through such links cannot be deleted, since whichever goes first is still
+     * named by the other. Either refusal comes before anything reaches the source. The check reads
+     * nothing from the source, so a row another writer commits after this session's last rebuild is
+     * not seen, and neither is a write through this session running at the same time.
      *
      * <p>The request names the exact type it writes. A subtype registered in its place is not written
      * through a supertype, because the rows would reach the source under one type and be rebuilt under
@@ -395,7 +409,8 @@ public final class JpaSession {
      * @param <M> the entity type
      * @throws JpaException if the session is inactive, the type is not registered exactly, the source
      *         holds no write instruction, an upserted row's link that is neither a list nor an
-     *         {@link Optional} carries no id or names no row, or the write fails
+     *         {@link Optional} carries no id or names no row, a held row the delete leaves names a
+     *         deleted row through such a link, or the write fails
      */
     @SuppressWarnings("unchecked")
     public <M extends JpaModel> void write(@NotNull WriteRequest<M> request) {
@@ -413,22 +428,11 @@ public final class JpaSession {
         if (request.rows().isEmpty())
             return;
 
-        if (request.operation() == WriteRequest.Operation.UPSERT) {
-            synchronized (this) {
-                if (!this.active)
-                    throw new JpaException("Session connection is not active");
+        synchronized (this) {
+            if (!this.active)
+                throw new JpaException("Session connection is not active");
 
-                ConcurrentList<JpaModel> rows = (ConcurrentList<JpaModel>) request.rows();
-
-                this.repositories.get(type).link(rows, target -> {
-                    ConcurrentMap<String, JpaModel> keyed = this.lookupFor(target, Concurrent.newMap());
-
-                    if (registered(this.config.models(), target).filter(type::equals).isPresent())
-                        keyed.putAll(JpaModel.keyed(type, rows));
-
-                    return keyed;
-                });
-            }
+            JpaRepository.refuseDangling(this.config.models(), request, model -> this.repositories.get(model).getRows());
         }
 
         writable.write(request);
@@ -510,9 +514,10 @@ public final class JpaSession {
      * @param models the registered types
      * @return the links, with an edge from each registered type to every registered type it links
      *         into
-     * @throws JpaException if a registered type, or a type one reaches through eager single-valued
-     *         associations, declares a collection-valued, element-collection or lazy association, or a
-     *         link or association naming no model it can resolve to
+     * @throws JpaException if a field of a registered type, or of a type one reaches through fields
+     *         declaring eager single-valued associations, declares a collection-valued,
+     *         element-collection or lazy association, or a link or association naming no model it can
+     *         resolve to
      */
     private static @NotNull Graph<Class<JpaModel>> linksOf(@NotNull ConcurrentList<Class<JpaModel>> models) {
         return Graph.<Class<JpaModel>>builder()
@@ -604,7 +609,7 @@ public final class JpaSession {
      * @return the registered type, empty when none answers
      */
     @SuppressWarnings("unchecked")
-    private static @NotNull Optional<Class<JpaModel>> registered(
+    static @NotNull Optional<Class<JpaModel>> registered(
         @NotNull ConcurrentList<Class<JpaModel>> models,
         @NotNull Class<?> type
     ) {

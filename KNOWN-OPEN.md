@@ -4,90 +4,83 @@ Open items after the document/database unification. Each stays here until it is
 closed or accepted; the design itself is in [`notes/jpa-unification/`](notes/jpa-unification/), and the
 ownership of the connect and hydrate path in [`notes/connection-flow/`](notes/connection-flow/).
 
-> #### The association walk does not see getters, embeddables or `@Any`
-> A session refuses to connect when a registered type, or an unregistered type its eager `@ManyToOne`
-> and `@OneToOne` fields reach, declares an association a held generation cannot follow. The walk
-> that checks this reads fields only, and names only `@OneToMany`, `@ManyToMany`,
-> `@ElementCollection` and a lazy `@ManyToOne` or `@OneToOne`. A type mapped through property-access
-> getters carries its association annotations on the getters, which the walk never reads, so it
-> neither refuses a lazy association there nor follows an eager one. The fields inside an
-> `@Embedded` component are not read, so a lazy association there is not refused and an eager one
-> is not followed. Hibernate's `@Any` and `@ManyToAny` are not among the annotations it names. Any
-> of the three on a registered type, or on a type it reaches, can put an uninitialized proxy or
-> collection into a held generation, which throws `LazyInitializationException` once the read that
-> loaded it has closed.
-> The same walk draws a session's rebuild edges for associations, so an eager association it does
-> not read draws none: a registered type reaching another only through a getter, an `@Embedded`
-> component, an `@Any` or a `@ManyToAny` is left out of that type's rebuilds, and keeps the copy it
-> was read with until a rebuild of its own. No model in the workspace declares `@Embedded`,
-> `@Access`, `@Any` or `@ManyToAny`.
+> #### A queued corpus write skips the link check
+> `JpaSession.write`, against the rows the session holds, and `JpaConfig.write`, against the rows its
+> source answers, refuse the whole write before anything reaches the source when an upserted row's
+> plain single-valued `@Linked` field carries no id or names no row, or when a deleted row is still
+> named through such a field; a list or `Optional` link tolerates a miss. data's
+> `WriteQueueConsumer`, the one production caller of `SkyBlockData.writing(...)`, calls neither: it
+> writes straight through the source that method returns, so its writes reach GitHub unchecked.
+> Each layer such a write changes lands as a commit, which the consumer counts as a success.
 >
-> - Affected: `src/main/java/dev/simplified/persistence/JpaSession.java:554` - `follow`, `:517` - `linksOf`
-> - Type: **GAP**
-> - Status: **OPEN**
-
-> #### A queued corpus write skips the session's link check
-> `JpaSession.write` links an upsert's rows against the rows the session holds before anything reaches
-> the source, and refuses a row whose plain single-valued `@Linked` field carries no id or names no
-> row. The one production writer of the corpus, data's `WriteQueueConsumer`, holds no session: it
-> writes through the source `SkyBlockData.writing(...)` returns, so its upserts reach GitHub
-> unchecked, and a delete of a row other rows still name is checked on no path. Such a write lands as
-> a commit. A reading session whose tick finds the document moved then fails the rebuild that relinks
-> the dangling row, and every type that rebuild covers stays `DEGRADED` on its previous generation and
-> fails again at each tick; a process whose first `SkyBlockData.connect()` comes after the commit
-> fails to connect, corpus-wide. Both last until another commit repairs the data.
+> A process whose first `SkyBlockData.connect()` comes after that commit fails to connect,
+> corpus-wide, since a connect reads every layer at the branch tip. A running session reads the
+> changed layer only once the catalogue is regenerated in a commit of its own, because a document's
+> fingerprint is the hash the catalogue records, or once a rebuild of another type covers it. That
+> rebuild fails the link pass on the dangling row and leaves every type it covers `DEGRADED` on its
+> previous generation, to be re-read and fail again at each tick. Both last until another commit
+> repairs the data. The skyblock models declare twelve plain single-valued links, `Item.category`,
+> `Accessory.item` and `Mixin.item` among them. No maintained module puts a write on the queue
+> outside tests.
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:218` -
 >   `apply`; `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/SkyBlockData.java:152` -
->   `writing`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`;
->   `src/main/java/dev/simplified/persistence/JpaRepository.java:270` - `resolveLinks`
+>   `writing`; `src/main/java/dev/simplified/persistence/JpaConfig.java:79` - `write`
+> - Type: **GAP**
+> - Status: **OPEN**
+
+> #### Repairing the client's response cache makes a corpus write's rebuild read from before the write
+> `JpaSession.write` rebuilds the written type once the write lands. Over the corpus's read-write
+> source that rebuild asks GitHub for the branch tip, holds the catalogue at the commit the write
+> made and reads every layer there, so it publishes the written rows. It does because the client's
+> `ResponseCache` retains no response: `store` creates each URL's bucket as an empty map and adds the
+> variant to it afterwards, and Caffeine fixes the bucket's lifetime at creation from
+> `ResponseCacheExpiry.expireAfterCreate`, which answers zero for a bucket holding no variant and
+> never sees the variant added in place. Every GET reaches GitHub, and no conditional request is
+> made. No client test stores through `store` and looks the entry up.
+>
+> `GitHubCorpus` reads through one client and writes through another, each with its own cache, and a
+> write clears nothing the read client holds. Once `store` retains a response for the `max-age`
+> GitHub sends, the read client answers the branch tip, and a file read at the branch, from before the
+> corpus's own write for up to that long. The writer's rebuild then republishes the pre-write rows as
+> `CURRENT` until the written type's next tick; its next write routes by the layers before the write,
+> so a delete of a row the previous write added edits nothing and returns; and `CorpusOrigin.edit`
+> sends the sha of the body the previous edit replaced, which GitHub refuses. A repair of `store` that
+> does not also clear the read client's cache on a corpus write brings all three.
+>
+> - Affected: `Simplified-Dev/client/src/main/java/dev/simplified/client/cache/ResponseCache.java:277` -
+>   `store`; `Simplified-Dev/client/src/main/java/dev/simplified/client/cache/ResponseCacheExpiry.java:48` -
+>   `expireAfterCreate`; `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:237` -
+>   `write`, `:341` - `poll`, `:199` - `blob`;
+>   `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:110` -
+>   `refreshedLayersOf`, `:184` - `edit`
 > - Type: **RISK**
 > - Status: **OPEN**
 
-> #### A corpus write's own rebuild reads the document from before the write
-> `JpaSession.write` rebuilds the written type once the write lands. Over the corpus's writing
-> origin that rebuild reads the rows from before the write. `CorpusOrigin.Writing.layersOf` polls the
-> branch tip before the write edits the document, and again when the rebuild resolves its layers,
-> and the second tip request is answered from the client's response cache, which keeps GitHub's
-> answer for its `max-age` of a minute. As far as the corpus can tell the branch has not moved, so
-> the held catalogue stays at the commit before the write and `CorpusOrigin.read` reads every layer
-> at that commit. The rebuild republishes the pre-write rows, and every type it covers is relinked
-> to them.
+> #### A rescheduled queue write re-sends its row, and can revert a later write
+> data's `WriteQueueConsumer` puts a failed write back on its retry map with the row it was enqueued
+> with, and a retry writes that row again whatever has landed since. The source replaces a written row
+> whole, so a later write to the same row that lands while the first waits out its backoff, up to 31
+> minutes at the configured five attempts, is reverted when the retry lands: a retried upsert restores
+> a row a later delete removed, and a retried delete removes one a later upsert wrote. Retries that
+> fall due in the same drain, as every elapsed one does on the first scan after a restart, are taken
+> in the retry map's order rather than the order they were enqueued in, so two retries of one row can
+> land oldest last.
 >
-> It heals at the written type's next due tick. The rebuild forgets the fingerprint each covered type
-> was read under, so that tick reads the type again whatever its fingerprint says, and by then the
-> cached tip has expired. Until then the writing session serves the rows from before its own write -
-> for the corpus's ten-minute cadence, between ten and twenty minutes, since the rebuild's
-> publication restarts the cadence - and a type with no cadence of its own keeps them until a later
-> rebuild covers it or the session connects again. No deployment in the workspace both writes and
-> reads the corpus: `SkyBlockData.connect()` reads through a source with no write half, and data's
-> `WriteQueueConsumer` writes through the source `SkyBlockData.writing(...)` returns with no session
-> over it. The path skyblock's README documents for a token-holding caller - connecting
-> `new JpaConfig(..., SkyBlockData.writing(corpus))` on its own `SessionManager` and writing through
-> that session - is exactly the one this affects.
+> Within one drain the one fresh envelope the cycle polled is applied first and every due retry after
+> it. A retry of the same row and operation is in the same request, where the source keys rows with
+> the later one winning, so the fresh row is never written, yet its envelope is counted as written. A
+> retry of the other operation is a later request, and undoes the fresh one.
 >
-> - Affected: `Simplified-Api/skyblock/src/main/java/api/simplified/skyblock/CorpusOrigin.java:149` -
->   `Writing.layersOf`, `:57` - `read`;
->   `Simplified-Api/github/src/main/java/api/simplified/github/GitHubCorpus.java:266` - `tip`,
->   `:341` - `poll`; `src/main/java/dev/simplified/persistence/JpaSession.java:401` - `write`
-> - Type: **RISK**
-> - Status: **OPEN**
-
-> #### A rescheduled queue write re-sends its rows, and can revert a later write
-> data's `WriteQueueConsumer` puts a failed write back on its retry map with the rows it was enqueued
-> with, and a retry writes those rows again whatever has landed since. A later write to the same row
-> that lands while the first waits out its backoff is reverted when the retry lands. Within one drain
-> every ready retry is applied after the one fresh envelope the cycle polled, and the source keys a
-> request's rows with the later one winning, so a retry of a row lands over a fresher write to it in
-> the same drain as well.
->
-> A write whose response is lost after GitHub committed it, such as a timeout reading the answer to
-> the PUT, throws like one that never landed. It is counted as a failure and retried as one,
-> re-sending rows that are already on the branch, which reverts any write to the same rows that
-> landed in between.
+> A write GitHub committed but whose answer is lost, such as a timeout reading the answer to the PUT,
+> throws like one that never landed: Feign's default retryer re-sends the PUT under the blob sha it
+> read, and GitHub refuses it as stale. A write that edits two layers and fails on the second throws
+> the same way after the first has committed. Either is counted as a failure and retried whole,
+> re-sending rows already on the branch and reverting any write to them that landed in between. No
+> maintained module puts a write on the queue outside tests.
 >
 > - Affected: `SkyBlock-Simplified/data/src/main/java/dev/sbs/data/write/WriteQueueConsumer.java:182` -
 >   `cycle`, `:218` - `apply`, `:265` - `reschedule`;
->   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:167` - `Writable.write`
+>   `src/main/java/dev/simplified/persistence/source/DocumentSource.java:285` - `ReadWrite.write`
 > - Type: **RISK**
 > - Status: **OPEN**

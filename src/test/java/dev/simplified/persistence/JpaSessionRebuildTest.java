@@ -56,7 +56,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>It also pins what an id naming no row does: a plain link fails the connect or the rebuild and
  * refuses an upsert before it is written - so two new rows of different types naming each other
- * cannot be written at all - while an {@link Optional} link holds empty.
+ * cannot be written at all - while an {@link Optional} link holds empty. A delete of a row a plain
+ * link still names is refused before it is written, and rows naming only each other are deleted
+ * together.
  *
  * <p>The session-level cases run twice, with the models registered parent first and child first, so
  * none of them rests on the order discovery happens to answer.
@@ -215,6 +217,34 @@ class JpaSessionRebuildTest {
             assertThat(children.getState(), equalTo(HydrationState.CURRENT));
             assertThat(children.getRows(), hasSize(1));
             assertThat(children.getRows().getFirst(), sameInstance(child));
+        }
+
+        @Test
+        @DisplayName("a delete of a row a plain link still names is refused whole before it is written, reads nothing and rebuilds nothing")
+        void aDeleteOfANamedRowIsRefused() {
+            Repository<LinkedParent> parents = this.repository(LinkedParent.class);
+            Repository<LinkedChild> children = this.repository(LinkedChild.class);
+            Repository<LinkedGrandchild> grandchildren = this.repository(LinkedGrandchild.class);
+            LinkedParent parent = parents.getRows().getFirst();
+            int parentReads = this.corpus.readsOf(LinkedParent.class);
+            int childReads = this.corpus.readsOf(LinkedChild.class);
+            int grandchildReads = this.corpus.readsOf(LinkedGrandchild.class);
+
+            JpaException thrown = assertThrows(
+                JpaException.class,
+                () -> this.session.write(WriteRequest.delete(LinkedParent.class, List.of(parent("p1", "one"))))
+            );
+
+            assertThat(thrown.getMessage(), equalTo("Field 'parent' of '" + LinkedChild.class.getName() + "' names 'p1', which the write deletes"));
+            assertThat(this.corpus.writes(), equalTo(0));
+            assertThat(this.corpus.parents.keySet(), contains("p1"));
+            assertThat(this.corpus.readsOf(LinkedParent.class), equalTo(parentReads));
+            assertThat(this.corpus.readsOf(LinkedChild.class), equalTo(childReads));
+            assertThat(this.corpus.readsOf(LinkedGrandchild.class), equalTo(grandchildReads));
+            assertThat(parents.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(children.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(grandchildren.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(parents.getRows().getFirst(), sameInstance(parent));
         }
 
         private void assertAFailedWriteKeepsEverything(@NotNull Runnable breakTheSource) {
@@ -501,6 +531,39 @@ class JpaSessionRebuildTest {
 
             assertThrows(JpaException.class, () -> session.write(WriteRequest.upsert(LinkedSibling.class, List.of(sibling("s4", "s5")))));
             assertThat(corpus.siblings.containsKey("s4"), is(false));
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("a delete of rows naming only each other lands, and one leaving a row that names a deleted one is refused")
+    void aDeleteOfRowsNamingOnlyEachOtherLands() {
+        LinkedCorpus corpus = new LinkedCorpus();
+        corpus.siblings.put("s1", "s1");
+        corpus.siblings.put("s2", "s3");
+        corpus.siblings.put("s3", "s2");
+        SessionManager manager = new SessionManager();
+
+        try {
+            JpaSession session = manager.connect(new JpaConfig(models(LinkedSibling.class), corpus));
+
+            JpaException thrown = assertThrows(
+                JpaException.class,
+                () -> session.write(WriteRequest.delete(LinkedSibling.class, List.of(sibling("s2", "s3"))))
+            );
+
+            assertThat(thrown.getMessage(), equalTo("Field 'sibling' of '" + LinkedSibling.class.getName() + "' names 's2', which the write deletes"));
+            assertThat(corpus.writes(), equalTo(0));
+
+            session.write(WriteRequest.delete(LinkedSibling.class, List.of(sibling("s2", "s3"), sibling("s3", "s2"))));
+
+            Repository<LinkedSibling> siblings = session.getRepository(LinkedSibling.class).orElseThrow();
+            assertThat(corpus.writes(), equalTo(1));
+            assertThat(corpus.siblings.keySet(), contains("s1"));
+            assertThat(siblings.getState(), equalTo(HydrationState.CURRENT));
+            assertThat(siblings.getRows(), hasSize(1));
+            assertThat(siblings.getRows().getFirst().getSibling(), sameInstance(siblings.getRows().getFirst()));
         } finally {
             manager.shutdown();
         }

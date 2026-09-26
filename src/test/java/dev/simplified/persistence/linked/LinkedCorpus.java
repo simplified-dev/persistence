@@ -23,9 +23,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@link LinkedSibling} rows kept outside their package, answering fresh instances on every read the
  * way a parsed document does.
  *
- * <p>It counts reads per type, can be told to fail one type's read, to answer a parent row that
- * carries no id or to refuse a write, and can park a parent read behind a gate while it records how
- * many reads were ever in flight at once.
+ * <p>It counts reads per type and the writes it receives, applies a delete as a removal, can be told
+ * to fail one type's read, to answer a parent row that carries no id or to refuse a write, and can
+ * park a parent read behind a gate while it records how many reads were ever in flight at once.
  */
 public final class LinkedCorpus implements Source.Writable {
 
@@ -58,6 +58,11 @@ public final class LinkedCorpus implements Source.Writable {
      * The reads answered so far, per type.
      */
     private final @NotNull ConcurrentMap<Class<?>, AtomicInteger> reads = Concurrent.newMap();
+
+    /**
+     * The writes received so far, refused ones included.
+     */
+    private final @NotNull AtomicInteger writes = new AtomicInteger();
 
     /**
      * The reads running right now.
@@ -103,6 +108,15 @@ public final class LinkedCorpus implements Source.Writable {
     public int readsOf(@NotNull Class<?> type) {
         AtomicInteger count = this.reads.get(type);
         return count == null ? 0 : count.get();
+    }
+
+    /**
+     * Counts the writes received, refused ones included.
+     *
+     * @return how many writes reached this source
+     */
+    public int writes() {
+        return this.writes.get();
     }
 
     @Override
@@ -154,21 +168,41 @@ public final class LinkedCorpus implements Source.Writable {
 
     @Override
     public <T extends JpaModel> void write(@NotNull WriteRequest<T> request) throws JpaException {
+        this.writes.incrementAndGet();
+
         if (this.refusing)
             throw new JpaException("The origin refused '%s'", request.type().getSimpleName());
 
+        boolean delete = request.operation() == WriteRequest.Operation.DELETE;
+
         request.rows().forEach(row -> {
             if (row instanceof LinkedParent parent)
-                this.parents.put(parent.getId(), parent.getName());
+                apply(this.parents, parent.getId(), parent.getName(), delete);
             else if (row instanceof LinkedChild child)
-                this.children.put(child.getId(), child.getParentId());
+                apply(this.children, child.getId(), child.getParentId(), delete);
             else if (row instanceof LinkedGrandchild grandchild)
-                this.grandchildren.put(grandchild.getId(), grandchild.getChildId());
+                apply(this.grandchildren, grandchild.getId(), grandchild.getChildId(), delete);
             else if (row instanceof LinkedStray stray)
-                this.strays.put(stray.getId(), stray.getParentId());
+                apply(this.strays, stray.getId(), stray.getParentId(), delete);
             else if (row instanceof LinkedSibling sibling)
-                this.siblings.put(sibling.getId(), sibling.getSiblingId());
+                apply(this.siblings, sibling.getId(), sibling.getSiblingId(), delete);
         });
+    }
+
+    /**
+     * Applies one written row to the map holding its type.
+     *
+     * @param rows the map holding the row's type
+     * @param id the row's id
+     * @param value what the map holds for the row
+     * @param delete whether the row is removed rather than stored
+     * @param <V> the type the map holds per row
+     */
+    private static <V> void apply(@NotNull ConcurrentMap<String, V> rows, @NotNull String id, @NotNull V value, boolean delete) {
+        if (delete)
+            rows.remove(id);
+        else
+            rows.put(id, value);
     }
 
     /**

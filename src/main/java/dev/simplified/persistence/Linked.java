@@ -47,13 +47,18 @@ import java.util.Optional;
  * }</pre>
  *
  * <p>A miss on a field of the third shape fails the whole rebuild - every type it covers publishes
- * nothing - and at connect that is every registered type. {@link JpaSession#write} refuses an upsert
- * whose rows would miss before it reaches the source, but a delete of a row other rows still name
- * lands, and fails every rebuild covering them and every connect after it until the data is
- * repaired. The upsert is checked against the rows the session holds, with the request's own rows
- * added to the written type's, so two new rows of different types naming each other through fields
- * of the third shape cannot be written; one side has to be an {@link Optional}, or first name a row
- * that is already held.
+ * nothing - and at connect that is every registered type. {@link JpaSession#write} refuses, before
+ * it reaches the source, an upsert whose rows would miss and a delete of a row a field of the third
+ * shape still names, and {@link JpaConfig#write} does the same for a caller holding no session. Each
+ * checks against rows already there - the rows the session holds, or the rows the config's source
+ * answers - with the request's own rows added to the written type's, so two new rows of different
+ * types naming each other through fields of the third shape cannot be written; one side has to be an
+ * {@link Optional}, or first name a row that is already there. Rows naming only each other through
+ * fields of the third shape can be deleted together when they are of the written type; two rows of
+ * different types naming each other through such fields cannot be deleted, since whichever goes first
+ * is still named by the other. A write straight through the source is not checked, and one that
+ * leaves a miss fails every rebuild covering it and every connect after it until the data is
+ * repaired.
  *
  * <p>Resolution runs once per generation, before it is published, so a reader never pays for it and an
  * index built over the generation describes rows that are already whole.

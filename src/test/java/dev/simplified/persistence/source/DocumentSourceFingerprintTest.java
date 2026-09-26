@@ -26,10 +26,10 @@ import static org.hamcrest.Matchers.not;
 
 /**
  * What a document source answers when a session asks for fingerprints: each type the fingerprint of
- * the document its table names, nothing for a type whose document the origin does not fingerprint,
- * and nothing at all from an origin that cannot fingerprint.
+ * the document its table names, nothing for a type whose document the tree does not fingerprint, and
+ * nothing at all from a tree that cannot fingerprint.
  *
- * <p>Every origin here fails a layer lookup or a read, so each case also shows that asking for
+ * <p>Every source here fails a layer lookup or a read, so each case also shows that asking for
  * fingerprints reads no document.
  */
 class DocumentSourceFingerprintTest {
@@ -37,38 +37,29 @@ class DocumentSourceFingerprintTest {
     private static final @NotNull Gson GSON = GsonSettings.defaults().create();
 
     /**
-     * A document origin that cannot fingerprint, answering the empty default.
+     * Starts a read-only source whose every layer lookup and read fails the case, fingerprinting
+     * nothing until the case gives it fingerprints.
+     *
+     * @return the builder
      */
-    private static class Unfingerprinted implements DocumentOrigin {
-
-        @Override
-        public @NotNull ConcurrentList<String> layersOf(@NotNull String name) {
-            throw new AssertionError(String.format("Asking for fingerprints looked up the layers of '%s'", name));
-        }
-
-        @Override
-        public @NotNull String read(@NotNull String path) {
-            throw new AssertionError(String.format("Asking for fingerprints read '%s'", path));
-        }
-
+    private static @NotNull DocumentSource.ReadOnly.Builder unreadable() {
+        return DocumentSource.ReadOnly.builder()
+            .withLayers(name -> { throw new AssertionError(String.format("Asking for fingerprints looked up the layers of '%s'", name)); })
+            .withText(path -> { throw new AssertionError(String.format("Asking for fingerprints read '%s'", path)); })
+            .withGson(GSON);
     }
 
     /**
-     * A document origin answering a fixed fingerprint per document name.
+     * Builds an unreadable source whose tree answers a fixed fingerprint per document name.
+     *
+     * @param documents the fingerprints, keyed by document name
+     * @return the source
      */
-    private static final class Fingerprinted extends Unfingerprinted {
+    private static @NotNull Source fingerprinted(@NotNull Map<String, String> documents) {
+        ConcurrentMap<String, String> answered = Concurrent.newMap();
+        answered.putAll(documents);
 
-        private final @NotNull ConcurrentMap<String, String> documents = Concurrent.newMap();
-
-        private Fingerprinted(@NotNull Map<String, String> documents) {
-            this.documents.putAll(documents);
-        }
-
-        @Override
-        public @NotNull ConcurrentMap<String, String> fingerprints() {
-            return this.documents;
-        }
-
+        return unreadable().withFingerprints(() -> answered).build();
     }
 
     @SuppressWarnings("unchecked")
@@ -84,11 +75,11 @@ class DocumentSourceFingerprintTest {
     @Test
     @DisplayName("each type answers the fingerprint of the document its table names")
     void eachTypeAnswersItsDocumentsFingerprint() {
-        Source source = new DocumentSource(new Fingerprinted(Map.of(
+        Source source = fingerprinted(Map.of(
             "layered", "layered-one",
             "test_parent", "parent-one",
             "unregistered", "unregistered-one"
-        )), GSON);
+        ));
 
         ConcurrentMap<Class<? extends JpaModel>, String> answered = source.fingerprints(models(LayeredRow.class, TestParentModel.class));
 
@@ -98,9 +89,9 @@ class DocumentSourceFingerprintTest {
     }
 
     @Test
-    @DisplayName("a type whose document the origin does not fingerprint is left out")
+    @DisplayName("a type whose document the tree does not fingerprint is left out")
     void anUnfingerprintedDocumentsTypeIsLeftOut() {
-        Source source = new DocumentSource(new Fingerprinted(Map.of("layered", "layered-one")), GSON);
+        Source source = fingerprinted(Map.of("layered", "layered-one"));
 
         ConcurrentMap<Class<? extends JpaModel>, String> answered = source.fingerprints(models(LayeredRow.class, TestChildModel.class));
 
@@ -110,9 +101,9 @@ class DocumentSourceFingerprintTest {
     }
 
     @Test
-    @DisplayName("an origin that cannot fingerprint leaves every type out, without naming any type's document")
-    void anOriginThatCannotFingerprintAnswersNothing() {
-        Source source = new DocumentSource(new Unfingerprinted(), GSON);
+    @DisplayName("a tree that cannot fingerprint leaves every type out, without naming any type's document")
+    void aTreeThatCannotFingerprintAnswersNothing() {
+        Source source = unreadable().build();
 
         // ContractRow declares no table, so resolving its document would throw.
         ConcurrentMap<Class<? extends JpaModel>, String> answered = source.fingerprints(models(LayeredRow.class, ContractRow.class));
